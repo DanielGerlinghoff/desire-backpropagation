@@ -6,7 +6,7 @@ import itertools
 neurons   = (784, 32, 32, 10)
 layer_cnt = len(neurons) - 1
 tstep_cnt = 10
-image_cnt = 50
+image_cnt = 100
 
 train_ntest   = True
 debug         = True
@@ -19,16 +19,23 @@ weights = [np.empty(0)] * layer_cnt
 mempot  = [np.empty(0)] * (layer_cnt + 1)
 spikes  = [np.empty(0)] * (layer_cnt + 1)
 traces  = [np.empty(0)] * layer_cnt
+results = dict()
 
 np.random.seed(0)
 for layer in range(layer_cnt):
-    weights[layer] = 2. * np.random.rand(neurons[layer], neurons[layer+1]) - 1
+    if train_ntest:
+        # Kaiming initialization
+        weights[layer] = np.random.randn(neurons[layer], neurons[layer+1]) * np.sqrt(2 / neurons[layer])
+    else:
+        weights[layer] = np.load(f"model/weights_{layer}.npy")
 
 # Function for learning algorithm
 def update_weight(layer, tstep_post, neu_post, desire_post):
     for neu_pre in range(neurons[layer]):
         # Update weight
-        update = learning_rate * traces[layer][tstep_post+1][neu_pre] * (neurons[-1] if desire_out else 1)
+        update = learning_rate * traces[layer][tstep_post+1][neu_pre]
+        update *= neurons[-1] if desire_post else 1
+        update /= np.prod(neurons[layer+1:])
         weights[layer][neu_pre][neu_post] += update if desire_post else -update
         
         # Skip recursion at second layer
@@ -44,7 +51,7 @@ def update_weight(layer, tstep_post, neu_post, desire_post):
 # Iterate over MNIST images
 dataset = datasets.MNIST("data/", download=True, train=True)
 for (image_idx, (image, label)) in enumerate(itertools.islice(dataset, image_cnt)):
-    if debug: print(f"Image: {image_idx}")
+    if debug: print(f"Image {image_idx}: {label}")
 
     # Reset spikes and membrane potentials
     for layer in range(layer_cnt + 1):
@@ -60,8 +67,6 @@ for (image_idx, (image, label)) in enumerate(itertools.islice(dataset, image_cnt
 
     # Process spikes and learn
     for tstep in range(tstep_cnt):
-        if debug: print(f"Timestep: {tstep}")
-
         # Generate input spike train from image
         for neu_in in range(neurons[0]):
             mempot[0][neu_in] += image[neu_in]
@@ -77,10 +82,13 @@ for (image_idx, (image, label)) in enumerate(itertools.islice(dataset, image_cnt
                     if spikes[layer][tstep][neu_pre]:
                         mempot[layer+1][neu_post] += weights[layer][neu_pre][neu_post]
 
-                # Calculate output spikes
+                # Calculate output spikes and decay membrane potential
                 if mempot[layer+1][neu_post] >= mempot_thres:
                     spikes[layer+1][tstep+1][neu_post] = True
                     mempot[layer+1][neu_post] -= mempot_thres
+                else:
+                    mempot_old = mempot[layer+1][neu_post]
+                    mempot[layer+1][neu_post] = ((mempot_old * 2 ** decay) - mempot_old) / 2 ** decay
 
             # Update spike traces
             for neu_pre in range(neurons[layer]):
@@ -91,13 +99,30 @@ for (image_idx, (image, label)) in enumerate(itertools.islice(dataset, image_cnt
                     traces[layer][tstep+1][neu_pre] += 1
 
         # Backpropagate weight updates
-        for neu_out in range(neurons[-1]):
-            if spikes[-1][tstep+1][neu_out]:
-                    desire_out = target[neu_out]
-                    update_weight(layer_cnt - 1, tstep, neu_out, desire_out)
+        if train_ntest:
+            for neu_out in range(neurons[-1]):
+                if spikes[-1][tstep+1][neu_out] or neu_out == label:
+                        desire_out = target[neu_out]
+                        update_weight(layer_cnt - 1, tstep, neu_out, desire_out)
+
+    # Print output spikes
+    if debug:
+        print(np.sum(spikes[-1], axis=0))
+
+    # Compare output with label
+    if not train_ntest:
+        if label not in results.keys():
+            results[label] = {True: 0, False: 0}
+
+        spikes_out = np.sum(spikes[-1], axis=0)
+        if np.argmax(spikes_out) == label:
+            results[label][True] += 1
+        else:
+            results[label][False] += 1
 
 # Save network model
-for layer in range(layer_cnt):
-    np.save(f"model/weights_{layer}.npy", weights[layer])
+if train_ntest:
+    for layer in range(layer_cnt):
+        np.save(f"model/weights_{layer}.npy", weights[layer])
 
 pass
