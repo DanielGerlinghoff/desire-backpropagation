@@ -3,15 +3,15 @@ from torchvision import datasets
 import itertools
 
 # Network configuration
-neurons   = (784, 32, 32, 10)
+neurons   = (784, 512, 256, 10)
 layer_cnt = len(neurons) - 1
-tstep_cnt = 10
-image_cnt = 100
+tstep_cnt = 20
+image_cnt = 2000
 
 train_ntest   = True
 debug         = True
 mempot_thres  = 1
-learning_rate = 0.001
+learning_rate = 1.e-3 / tstep_cnt
 decay         = 1
 
 # Network parameters
@@ -19,6 +19,8 @@ weights = [np.empty(0)] * layer_cnt
 mempot  = [np.empty(0)] * (layer_cnt + 1)
 spikes  = [np.empty(0)] * (layer_cnt + 1)
 traces  = [np.empty(0)] * layer_cnt
+desire  = [np.empty(0)] * layer_cnt
+spike_out_cnt = np.zeros(neurons[-1], dtype=np.int)
 results = dict()
 
 np.random.seed(0)
@@ -28,25 +30,6 @@ for layer in range(layer_cnt):
         weights[layer] = np.random.randn(neurons[layer], neurons[layer+1]) * np.sqrt(2 / neurons[layer])
     else:
         weights[layer] = np.load(f"model/weights_{layer}.npy")
-
-# Function for learning algorithm
-def update_weight(layer, tstep_post, neu_post, desire_post):
-    for neu_pre in range(neurons[layer]):
-        # Update weight
-        update = learning_rate * traces[layer][tstep_post+1][neu_pre]
-        update *= neurons[-1] if desire_post else 1
-        update /= np.prod(neurons[layer+1:])
-        weights[layer][neu_pre][neu_post] += update if desire_post else -update
-        
-        # Skip recursion at second layer
-        if layer == 0:
-            continue
-        
-        # Determine desire to spike
-        desire_pre = not ((weights[layer][neu_pre][neu_post] > 0) ^ desire_post)
-
-        # Call recursive
-        update_weight(layer-1, tstep_post-1, neu_pre, desire_pre)
 
 # Iterate over MNIST images
 dataset = datasets.MNIST("data/", download=True, train=True)
@@ -59,11 +42,22 @@ for (image_idx, (image, label)) in enumerate(itertools.islice(dataset, image_cnt
         spikes[layer] = np.zeros((tstep_cnt + 1, neurons[layer]), dtype=np.bool)
         if layer < layer_cnt:
             traces[layer] = np.zeros((tstep_cnt + 1, neurons[layer]), dtype=np.float)
+            desire[layer] = np.zeros(neurons[layer+1], dtype=np.bool)
     
-    # Input image and target
+    # Input image and backpropagate desire
     image  = np.array(image).flatten().astype(np.float) / 255.
-    target = np.zeros(neurons[-1], dtype=np.bool)
-    target[label] = True
+
+    desire[-1][label] = True
+    for layer in range(layer_cnt - 1, 0, -1):
+        for neu_pre in range(neurons[layer]):
+            desire_sum = 0
+            for neu_post in range(neurons[layer+1]):
+                target_mult = 1
+                if layer == layer_cnt - 1 and desire[-1][neu_post]:
+                    target_mult *= neurons[-1]
+                    target_mult *= tstep_cnt - spike_out_cnt[label]
+                desire_sum -= (-1) ** desire[layer][neu_post] * weights[layer][neu_pre][neu_post] * target_mult
+            desire[layer-1][neu_pre] = True if desire_sum > 0 else False
 
     # Process spikes and learn
     for tstep in range(tstep_cnt):
@@ -98,16 +92,18 @@ for (image_idx, (image, label)) in enumerate(itertools.islice(dataset, image_cnt
                 if spikes[layer][tstep][neu_pre]:
                     traces[layer][tstep+1][neu_pre] += 1
 
-        # Backpropagate weight updates
-        if train_ntest:
-            for neu_out in range(neurons[-1]):
-                if spikes[-1][tstep+1][neu_out] or neu_out == label:
-                        desire_out = target[neu_out]
-                        update_weight(layer_cnt - 1, tstep, neu_out, desire_out)
+            # Update weights
+            if train_ntest:
+                for neu_post in range(neurons[layer+1]):
+                    if spikes[layer+1][tstep+1][neu_post]:
+                        for neu_pre in range(neurons[layer]):
+                            update = learning_rate * traces[layer][tstep+1][neu_pre]
+                            weights[layer][neu_pre][neu_post] += (1 if desire[layer][neu_post] else -1) * update
 
-    # Print output spikes
     if debug:
         print(np.sum(spikes[-1], axis=0))
+
+    spike_out_cnt[label] = np.sum(spikes[-1][:,label])
 
     # Compare output with label
     if not train_ntest:
