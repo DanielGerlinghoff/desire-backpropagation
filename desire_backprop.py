@@ -29,7 +29,8 @@ np.random.seed(0)
 for layer in range(layer_cnt):
     if train_ntest:
         # Kaiming initialization
-        weights[layer] = np.random.randn(neurons[layer], neurons[layer+1]) * np.sqrt(2 / neurons[layer])
+        weights[layer] = np.random.randn(neurons[layer], neurons[layer+1]).astype(np.float32) * \
+                         np.sqrt(2 / neurons[layer])
     else:
         weights[layer] = np.load(f"model/weights_{layer}.npy")
 
@@ -46,14 +47,14 @@ for epoch in range(epoch_cnt):
 
         # Reset spikes and membrane potentials
         for layer in range(layer_cnt + 1):
-            mempot[layer] = np.zeros(neurons[layer], dtype=np.float)
+            mempot[layer] = np.zeros(neurons[layer], dtype=np.float32)
             spikes[layer] = np.zeros((tstep_cnt + 1, neurons[layer]), dtype=np.bool)
             if layer < layer_cnt:
-                traces[layer] = np.zeros((tstep_cnt + 1, neurons[layer]), dtype=np.float)
+                traces[layer] = np.zeros((tstep_cnt + 1, neurons[layer]), dtype=np.float32)
                 desire[layer] = np.zeros((neurons[layer+1], 2), dtype=np.bool)
 
         # Input image and forward pass
-        image = np.array(image, dtype=np.float).flatten()
+        image = np.array(image, dtype=np.float32).flatten()
 
         for tstep in range(tstep_cnt):
             # Generate input spike train from image
@@ -126,10 +127,10 @@ for epoch in range(epoch_cnt):
 
             # Reset spikes and membrane potentials
             for layer in range(layer_cnt + 1):
-                mempot[layer] = np.zeros(neurons[layer], dtype=np.float)
+                mempot[layer] = np.zeros(neurons[layer], dtype=np.float32)
                 spikes[layer] = np.zeros((tstep_cnt + 1, neurons[layer]), dtype=np.bool)
                 if layer < layer_cnt:
-                    traces[layer] = np.zeros((tstep_cnt + 1, neurons[layer]), dtype=np.float)
+                    traces[layer] = np.zeros((tstep_cnt + 1, neurons[layer]), dtype=np.float32)
 
             # Process spikes and learn
             for tstep in range(tstep_cnt):
