@@ -24,11 +24,11 @@ class snn_linear(nn.Module):
 
         self.spikes = torch.zeros((tsteps + 1, neu_out), dtype=torch.bool)
         self.mempot = torch.zeros(neu_in, dtype=torch.float32)
+        self.traces = torch.zeros((tsteps + 1, neu_in), dtype=torch.float32)
         self.desire = torch.zeros((neu_out, 2), dtype=torch.bool)
 
-    def forward(self, spikes_in):
+    def forward(self, spikes_in, tstep, traces=False):
         spikes_out = torch.zeros(self.neu_post_cnt, dtype=torch.bool)
-        traces_out = torch.zeros(self.neu_post_cnt, dtype=torch.float32)
 
         for neu_post in range(self.neu_post_cnt):
             # Update membrane potential
@@ -44,7 +44,10 @@ class snn_linear(nn.Module):
                 mempot_old = self.mempot[neu_post]
                 self.mempot[neu_post] = ((mempot_old * 2 ** decay) - mempot_old) / 2 ** decay
 
-        return spikes_out, traces_out
+        self.spikes[tstep+1] = spikes_out
+
+        # Generate traces
+        if traces: self.gen_traces(spikes_in, tstep)
 
     def backward(self, desire_in):
         desire_out  = torch.zeros((self.neu_pre_cnt, 2), dtype=torch.bool)
@@ -64,9 +67,18 @@ class snn_linear(nn.Module):
 
         return desire_out
 
+    def gen_traces(self, spikes_in, tstep):
+        for neu_pre in range(self.neu_pre_cnt):
+            trace = self.traces[tstep][neu_pre]
+            self.traces[tstep+1][neu_pre] = ((trace * 2 ** decay) - trace) / 2 ** decay
+
+            if spikes_in[neu_pre]:
+                self.traces[tstep+1][neu_pre] += 1
+
     def reset(self):
         self.spikes = torch.zeros((self.tstep_cnt + 1, self.neu_post_cnt), dtype=torch.bool)
         self.mempot = torch.zeros(self.neu_pre_cnt, dtype=torch.float32)
+        self.traces = torch.zeros((self.tstep_cnt + 1, self.neu_pre_cnt), dtype=torch.float32)
         self.desire = torch.zeros((self.neu_post_cnt, 2), dtype=torch.bool)
 
 class snn_input(nn.Module):
@@ -79,9 +91,8 @@ class snn_input(nn.Module):
         self.spikes = torch.zeros((tsteps + 1, neu_in), dtype=torch.bool)
         self.mempot = torch.zeros(neu_in, dtype=torch.float32)
 
-    def forward(self, image):
+    def forward(self, image, tstep):
         spikes_out = torch.zeros(self.neu_in_cnt, dtype=torch.bool)
-        traces_out = torch.zeros(self.neu_in_cnt, dtype=torch.float32)
 
         # Generate input spike train from image
         for neu_in in range(self.neu_in_cnt):
@@ -90,7 +101,7 @@ class snn_input(nn.Module):
                 spikes_out[neu_in] = True
                 self.mempot[neu_in] -= mempot_thres
 
-        return spikes_out, traces_out
+        self.spikes[tstep] = spikes_out
 
     def reset(self):
         self.spikes = torch.zeros((self.tstep_cnt + 1, self.neu_in_cnt), dtype=torch.bool)
@@ -123,10 +134,10 @@ class snn_model(nn.Module):
         # Process spikes
         image = self.flat(image)
         for tstep in range(self.tstep_cnt):
-            self.inp.spikes[tstep], t = self.inp(image)
-            self.lin1.spikes[tstep+1], t = self.lin1(self.inp.spikes[tstep])
-            self.lin2.spikes[tstep+1], t = self.lin2(self.lin1.spikes[tstep])
-            self.lin3.spikes[tstep+1], t = self.lin3(self.lin2.spikes[tstep])
+            self.inp(image, tstep)
+            self.lin1(self.inp.spikes[tstep], tstep, traces=train_ntest)
+            self.lin2(self.lin1.spikes[tstep], tstep, traces=train_ntest)
+            self.lin3(self.lin2.spikes[tstep], tstep, traces=train_ntest)
 
         return self.lin3.spikes
 
