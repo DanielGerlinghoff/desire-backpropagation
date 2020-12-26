@@ -157,13 +157,20 @@ class snn_model(nn.Module):
 
 # Define optimizer
 class snn_optim(torch.optim.Optimizer):
-    def __init__(self, params):
+    def __init__(self, model):
+        self.model = model
         defaults = dict()
 
-        super().__init__(params, defaults)
+        super().__init__(model.parameters(), defaults)
 
     def step(self, closure=None):
-        pass
+        for tstep in range(tstep_cnt):
+            for layer in [self.model.lin1, self.model.lin2, self.model.lin3]:
+                for neu_post in range(layer.neu_post_cnt):
+                    if layer.spikes[tstep+1][neu_post] and layer.desire[neu_post][0]:
+                        for neu_pre in range(layer.neu_pre_cnt):
+                            update = learning_rate * layer.traces[tstep+1][neu_pre]
+                            layer.weights[neu_pre][neu_post] += (1 if layer.desire[neu_post][1] else -1) * update
 
 
 if __name__ == "__main__":
@@ -183,6 +190,7 @@ if __name__ == "__main__":
     desire_thres  = {"hidden": 0.1, "output": 0.1}
 
     model = snn_model(neurons, tstep_cnt)
+    optim = snn_optim(model)
 
     # Iterate over MNIST images
     dataset = datasets.MNIST("data", train=train_ntest, download=True, transform=transforms.ToTensor())
@@ -195,7 +203,12 @@ if __name__ == "__main__":
             # Forward pass
             spikes = model(image)
             model.backward(label)
+            optim.step()
             if debug:
                 print(np.array(torch.sum(spikes, dim=0)))
 
-pass
+        # Export model
+        if not os.path.exists(f"model"):
+            os.makedirs(f"model")
+        torch.save(model.state_dict(), f"model/model_{epoch}.pt")
+
