@@ -7,14 +7,14 @@ import itertools
 neurons   = (784, 512, 256, 10)
 layer_cnt = len(neurons) - 1
 tstep_cnt = 20
-image_cnt = 2000
+image_cnt = 60000
 epoch_cnt = 1
 
 train_ntest   = True
 debug         = True
-debug_period  = 2000
+debug_period  = 5000
 mempot_thres  = 1
-learning_rate = 1.e-3 / tstep_cnt
+learning_rate = 1.e-4 / tstep_cnt
 decay         = 1
 desire_thres  = {"hidden": 0.1, "output": 0.1}
 

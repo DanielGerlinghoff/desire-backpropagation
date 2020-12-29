@@ -2,7 +2,7 @@ import torch
 from torchvision import datasets, transforms
 
 # Define neural network model
-log_interval = 200
+log_interval = 1200
 torch.manual_seed(0)
 
 neurons = [784, 512, 256, 10]
@@ -15,11 +15,11 @@ model = torch.nn.Sequential(
     torch.nn.Linear(neurons[2], neurons[3], bias=False),
     torch.nn.Softmax(dim=1)
 )
-optimizer = torch.optim.SGD(model.parameters(), lr=0.05)
+optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
 criterion = torch.nn.CrossEntropyLoss()
 
 # Download and prepare MNIST dataset
-image_cnt  = 2000
+image_cnt  = 60000
 batch_size = 1
 batch_cnt  = int(image_cnt / batch_size)
 
