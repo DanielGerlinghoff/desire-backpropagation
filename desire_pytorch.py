@@ -21,6 +21,7 @@ class snn_linear(nn.Module):
             weights = np.load(f"model/weights_{idx}.npy")
         self.weights = nn.Parameter(torch.from_numpy(weights))
         self.weights.requires_grad = False
+        # TODO: Transpose weights to (neu_out, neu_in)
 
         self.spikes = torch.zeros((tsteps + 1, neu_out), dtype=torch.bool)
         self.mempot = torch.zeros(neu_in, dtype=torch.float32)
@@ -28,52 +29,42 @@ class snn_linear(nn.Module):
         self.desire = torch.zeros((neu_out, 2), dtype=torch.bool)
 
     def forward(self, spikes_in, tstep, traces=False):
-        spikes_out = torch.zeros(self.neu_post_cnt, dtype=torch.bool)
+        # Update membrane potential
+        self.mempot.addmv_(self.weights.t(), spikes_in.type(torch.float32))
+        mempot_ge_thres = self.mempot.ge(mempot_thres)
+        self.mempot.sub_(mempot_ge_thres.type(torch.int), alpha=mempot_thres)
 
-        for neu_post in range(self.neu_post_cnt):
-            # Update membrane potential
-            for neu_pre in range(self.neu_pre_cnt):
-                if spikes_in[neu_pre]:
-                    self.mempot[neu_post] += self.weights[neu_pre][neu_post]
+        # Calculate output spikes
+        self.spikes[tstep+1] = mempot_ge_thres
 
-            # Calculate output spikes and decay membrane potential
-            if self.mempot[neu_post] >= mempot_thres:
-                spikes_out[neu_post] = True
-                self.mempot[neu_post] -= mempot_thres
-            else:
-                mempot_old = self.mempot[neu_post]
-                self.mempot[neu_post] = ((mempot_old * 2 ** decay) - mempot_old) / 2 ** decay
-
-        self.spikes[tstep+1] = spikes_out
+        # Decay membrane potential
+        self.mempot.mul_(mempot_ge_thres.logical_not().mul((2 ** decay - 1) / 2 ** decay).add(mempot_ge_thres))
 
         # Generate traces
         if traces: self.gen_traces(spikes_in, tstep)
 
     def backward(self, desire_in):
-        desire_out  = torch.zeros((self.neu_pre_cnt, 2), dtype=torch.bool)
+        # Output error for desired and undesired neurons
+        error_ndes = torch.sum(self.spikes.type(torch.float32), dim=0).div(self.tstep_cnt)
+        error_des  = error_ndes.neg().add(1)
+        error      = error_des.mul(desire_in[:, 1]) + error_ndes.mul(desire_in[:, 1].logical_not())
 
-        for neu_pre in range(self.neu_pre_cnt):
-            desire_sum = 0
-            for neu_post in range(self.neu_post_cnt):
-                if desire_in[neu_post][0]:
-                    if desire_in[neu_post][1]:
-                        error = 1 - torch.sum(self.spikes[:, neu_post]) / self.tstep_cnt
-                        desire_sum += self.weights[neu_pre][neu_post] * error
-                    else:
-                        error = torch.sum(self.spikes[:, neu_post]) / self.tstep_cnt
-                        desire_sum -= self.weights[neu_pre][neu_post] * error
-            desire_out[neu_pre][0] = abs(desire_sum) >= desire_thres["hidden"]
-            desire_out[neu_pre][1] = desire_sum > 0
+        # Sum weights and errors
+        sign = desire_in[:, 1].mul(2).sub(1)
+        sign.mul_(desire_in[:, 0])
+
+        desire_sum = torch.sum(self.weights.mul(torch.mul(error, sign)), dim=1)
+
+        # Desire of previous layer
+        desire_out_0 = desire_sum.abs().ge(desire_thres["hidden"])
+        desire_out_1 = desire_sum.gt(0)
+        desire_out   = torch.stack((desire_out_0, desire_out_1), dim=1)
 
         return desire_out
 
     def gen_traces(self, spikes_in, tstep):
-        for neu_pre in range(self.neu_pre_cnt):
-            trace = self.traces[tstep][neu_pre]
-            self.traces[tstep+1][neu_pre] = ((trace * 2 ** decay) - trace) / 2 ** decay
-
-            if spikes_in[neu_pre]:
-                self.traces[tstep+1][neu_pre] += 1
+        self.traces[tstep+1] = self.traces[tstep].mul((2 ** decay - 1) / 2 ** decay)
+        self.traces[tstep+1].add_(spikes_in.type(torch.int))
 
     def reset(self):
         self.spikes = torch.zeros((self.tstep_cnt + 1, self.neu_post_cnt), dtype=torch.bool)
@@ -92,16 +83,13 @@ class snn_input(nn.Module):
         self.mempot = torch.zeros(neu_in, dtype=torch.float32)
 
     def forward(self, image, tstep):
-        spikes_out = torch.zeros(self.neu_in_cnt, dtype=torch.bool)
+        # Update membrane potential
+        self.mempot.add_(image)
+        mempot_ge_thres = self.mempot.ge(mempot_thres)
+        self.mempot.sub_(mempot_ge_thres.type(torch.int), alpha=mempot_thres)
 
-        # Generate input spike train from image
-        for neu_in in range(self.neu_in_cnt):
-            self.mempot[neu_in] += image[neu_in]
-            if self.mempot[neu_in] >= mempot_thres:
-                spikes_out[neu_in] = True
-                self.mempot[neu_in] -= mempot_thres
-
-        self.spikes[tstep] = spikes_out
+        # Calculate output spikes
+        self.spikes[tstep] = mempot_ge_thres
 
     def reset(self):
         self.spikes = torch.zeros((self.tstep_cnt + 1, self.neu_in_cnt), dtype=torch.bool)
@@ -143,13 +131,13 @@ class snn_model(nn.Module):
 
     def backward(self, label):
         # Desire of output layer
-        for neu_out in range(self.neuron_cnt[-1]):
-            if neu_out == label:
-                self.lin3.desire[neu_out][0] = 1 - torch.sum(self.lin3.spikes[:,neu_out]) / self.tstep_cnt
-            else:
-                self.lin3.desire[neu_out][0] = torch.sum(self.lin3.spikes[:,neu_out]) / self.tstep_cnt
-            self.lin3.desire[neu_out][0] = self.lin3.desire[neu_out][0] >= desire_thres["output"]
-            self.lin3.desire[neu_out][1] = neu_out == label
+        error = torch.sum(self.lin3.spikes.type(torch.float32), dim=0).div(self.tstep_cnt)
+        error[label].neg_().add_(1)
+
+        desire_0 = error.gt(0)  # TODO: .gt(0), should be .ge(desire_thres["output"])
+        desire_1 = torch.zeros_like(desire_0)
+        desire_1[label] = True
+        self.lin3.desire = torch.stack((desire_0, desire_1), dim=1)
 
         # Backpropagate desire
         self.lin2.desire = self.lin3.backward(self.lin3.desire)
@@ -164,13 +152,13 @@ class snn_optim(torch.optim.Optimizer):
         super().__init__(model.parameters(), defaults)
 
     def step(self, closure=None):
-        for tstep in range(tstep_cnt):
-            for layer in [self.model.lin1, self.model.lin2, self.model.lin3]:
-                for neu_post in range(layer.neu_post_cnt):
-                    if layer.spikes[tstep+1][neu_post] and layer.desire[neu_post][0]:
-                        for neu_pre in range(layer.neu_pre_cnt):
-                            update = learning_rate * layer.traces[tstep+1][neu_pre]
-                            layer.weights[neu_pre][neu_post] += (1 if layer.desire[neu_post][1] else -1) * update
+        for layer in [self.model.lin1, self.model.lin2, self.model.lin3]:
+            cond   = torch.logical_and(layer.spikes, layer.desire[:, 0].repeat(model.tstep_cnt + 1, 1))
+            sign   = layer.desire[:, 1].mul(2).sub(1).repeat(model.tstep_cnt + 1, 1)
+            update = layer.traces.repeat(layer.neu_post_cnt, 1, 1).permute(1, 2, 0)
+            update.mul_(torch.mul(cond, sign).repeat(layer.neu_pre_cnt, 1, 1).permute(1, 0, 2))
+
+            layer.weights.add_(torch.sum(update, dim=0), alpha=learning_rate)
 
 
 if __name__ == "__main__":
