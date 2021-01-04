@@ -17,7 +17,8 @@ class snn_linear(nn.Module):
         self.decay        = (2 ** hyp["decay"] - 1) / 2 ** hyp["decay"]
 
         # Network parameters
-        self.weights = nn.Parameter(torch.randn(neu_out, neu_in).mul(np.sqrt(2 / neu_in)))
+        self.weights = nn.Parameter(torch.randn(neu_out, neu_in))
+        nn.init.kaiming_normal_(self.weights)
         self.weights.requires_grad = False
 
         self.reset()
@@ -126,7 +127,7 @@ class snn_model(nn.Module):
         error = torch.sum(self.lin3.spikes.type(torch.float32), dim=0).div(self.hyp["tsteps"])
         error[label].neg_().add_(1)
 
-        desire_0 = error.gt(0)  # TODO: .gt(0), should be .ge(self.hyp["desire_thres"]["output"])
+        desire_0 = error.gt(self.hyp["desire_thres"]["output"])
         desire_1 = torch.zeros_like(desire_0)
         desire_1[label] = True
         self.lin3.desire = torch.stack((desire_0, desire_1), dim=1)
@@ -162,7 +163,7 @@ if __name__ == "__main__":
     hyper_pars["mempot_thres"]  = 1.0
     hyper_pars["learning_rate"] = 1.e-4 / hyper_pars["tsteps"]
     hyper_pars["decay"]         = 1
-    hyper_pars["desire_thres"]  = {"hidden": 0.1, "output": 0.1}
+    hyper_pars["desire_thres"]  = {"hidden": 0.1, "output": 0.0}
     hyper_pars["gpu_ncpu"]      = torch.cuda.is_available()
     hyper_pars["device"]        = torch.device('cuda' if hyper_pars["gpu_ncpu"] else 'cpu')
 

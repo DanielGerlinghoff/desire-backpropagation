@@ -112,10 +112,10 @@ for epoch in range(epoch_cnt):
                 # Output layer
                 for neu_pre in range(neurons[layer]):
                     if neu_pre == label:
-                        desire[layer-1][neu_pre][0] = (1 - np.sum(spikes[layer][:,neu_pre]) / tstep_cnt) >= desire_thres["output"]
+                        desire[layer-1][neu_pre][0] = (1 - np.sum(spikes[layer][:,neu_pre]) / tstep_cnt) > desire_thres["output"]
                         desire[layer-1][neu_pre][1] = True
                     else:
-                        desire[layer-1][neu_pre][0] = (np.sum(spikes[layer][:,neu_pre]) / tstep_cnt) >= desire_thres["output"]
+                        desire[layer-1][neu_pre][0] = (np.sum(spikes[layer][:,neu_pre]) / tstep_cnt) > desire_thres["output"]
                         desire[layer-1][neu_pre][1] = False
 
             for layer in range(layer_cnt - 1, 0, -1):
