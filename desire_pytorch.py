@@ -154,6 +154,30 @@ class snn_optim(torch.optim.Optimizer):
 
             layer.weights.add_(torch.sum(update, dim=0), alpha=self.hyp["learning_rate"])
 
+# Define result computation
+class snn_result:
+    def __init__(self, hyp):
+        self.neu_out = hyp["neurons"][-1]
+        self.results = None
+        self.logfile = open(os.path.splitext(os.path.basename(__file__))[0] + ".log", "w", buffering=1)
+
+    def register(self, spikes, label):
+        spikes_max = torch.max(spikes)
+        if spikes[label] == spikes_max:
+            self.results[label][label] += 1
+        else:
+            self.results[label][torch.argmax(spikes)] += 1
+
+    def print(self, epoch, desc, length):
+        accuracy = self.results.diag().sum() / length * 100
+        print("Epoch {:2d} {desc:s}: {:.2f}%".format(epoch, accuracy), file=self.logfile)
+
+    def reset(self):
+        self.results = torch.zeros((self.neu_out, self.neu_out), dtype=torch.int)
+
+    def finish(self):
+        self.logfile.close()
+
 
 if __name__ == "__main__":
     # Network configuration
@@ -164,6 +188,7 @@ if __name__ == "__main__":
     hyper_pars["learning_rate"] = 1.e-4 / hyper_pars["tsteps"]
     hyper_pars["decay"]         = 1
     hyper_pars["desire_thres"]  = {"hidden": 0.1, "output": 0.0}
+    hyper_pars["shuffle_data"]  = True
     hyper_pars["gpu_ncpu"]      = torch.cuda.is_available()
     hyper_pars["device"]        = torch.device('cuda' if hyper_pars["gpu_ncpu"] else 'cpu')
 
@@ -172,11 +197,11 @@ if __name__ == "__main__":
 
     model = snn_model(hyper_pars)
     optim = snn_optim(model, hyper_pars)
+    resul = snn_result(hyper_pars)
 
     # Iterate over MNIST images
     dataset_train = datasets.MNIST("data", train=True, download=True, transform=transforms.ToTensor())
     dataset_test  = datasets.MNIST("data", train=False, download=True, transform=transforms.ToTensor())
-    logfile = open(os.path.splitext(os.path.basename(__file__))[0] + ".log", "w", buffering=1)
     epoch_cnt = 10
     debug     = True
 
@@ -185,36 +210,37 @@ if __name__ == "__main__":
 
         # Training
         model.train()
-        for (image_idx, (image, label)) in enumerate(dataset_train):
-            if debug: print(f"Image {image_idx}: {label}")
-            image, label = image.to(hyper_pars["device"]), torch.tensor(label).to(hyper_pars["device"])
+        resul.reset()
 
-            spikes = model(image)
-            model.backward(label)
-            optim.step()
-            if debug:
-                print(np.array(torch.sum(spikes, dim=0).cpu()))
+        if hyper_pars["shuffle_data"]: dataorder_train = torch.randperm(len(dataset_train))
+        else: dataorder_train = torch.arange(0, len(dataset_train), dtype=torch.int)
 
-        # Inference
-        model.eval()
-        results = torch.zeros((hyper_pars["neurons"][-1], hyper_pars["neurons"][-1]), dtype=torch.int)
-        for (image_idx, (image, label)) in enumerate(dataset_test):
-            if debug: print(f"Image {image_idx}: {label}")
-            image, label = image.to(hyper_pars["device"]), torch.tensor(label).to(hyper_pars["device"])
+        for (image_cnt, image_idx) in enumerate(dataorder_train):
+            image = dataset_train[image_idx][0].to(hyper_pars["device"])
+            label = torch.tensor(dataset_train[image_idx][1]).to(hyper_pars["device"])
+            if debug: print(f"Image {image_cnt}: {label}")
 
             spikes_out = torch.sum(model(image), dim=0)
             if debug: print(np.array(spikes_out.cpu()))
+            resul.register(spikes_out, label)
 
-            # Compare output with label
-            spikes_max = torch.max(spikes_out)
-            if spikes_out[label] == spikes_max:
-                results[label][label] += 1
-            else:
-                results[label][torch.argmax(spikes_out)] += 1
+            model.backward(label)
+            optim.step()
 
-        print(f"Epoch: {epoch}", file=logfile)
-        print(np.array(results.cpu()), file=logfile)
-        print("Accuracy: {:.2f}%".format(results.diag().sum() / len(dataset_test) * 100), file=logfile)
+        resul.print(epoch, "Training", len(dataset_train))
 
-logfile.close()
+        # Inference
+        model.eval()
+        resul.reset()
+        for (image_cnt, (image, label)) in enumerate(dataset_test):
+            image, label = image.to(hyper_pars["device"]), torch.tensor(label).to(hyper_pars["device"])
+            if debug: print(f"Image {image_cnt}: {label}")
+
+            spikes_out = torch.sum(model(image), dim=0)
+            if debug: print(np.array(spikes_out.cpu()))
+            resul.register(spikes_out, label)
+
+        resul.print(epoch, "Test", len(dataset_test))
+
+resul.finish()
 
