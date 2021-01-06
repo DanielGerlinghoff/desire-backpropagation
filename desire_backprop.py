@@ -29,7 +29,8 @@ np.random.seed(0)
 for layer in range(layer_cnt):
     if train_ntest:
         # Kaiming initialization
-        weights[layer] = np.random.randn(neurons[layer], neurons[layer+1]) * np.sqrt(2 / neurons[layer])
+        weights[layer] = np.random.randn(neurons[layer], neurons[layer+1]).astype(np.float32) * \
+                         np.sqrt(2 / neurons[layer])
     else:
         weights[layer] = np.load(f"model/weights_{layer}.npy")
 
@@ -46,14 +47,14 @@ for epoch in range(epoch_cnt):
 
         # Reset spikes and membrane potentials
         for layer in range(layer_cnt + 1):
-            mempot[layer] = np.zeros(neurons[layer], dtype=np.float)
+            mempot[layer] = np.zeros(neurons[layer], dtype=np.float32)
             spikes[layer] = np.zeros((tstep_cnt + 1, neurons[layer]), dtype=np.bool)
             if layer < layer_cnt:
-                traces[layer] = np.zeros((tstep_cnt + 1, neurons[layer]), dtype=np.float)
+                traces[layer] = np.zeros((tstep_cnt + 1, neurons[layer]), dtype=np.float32)
                 desire[layer] = np.zeros((neurons[layer+1], 2), dtype=np.bool)
 
         # Input image and forward pass
-        image = np.array(image, dtype=np.float).flatten()
+        image = np.array(image, dtype=np.float32).flatten()
 
         for tstep in range(tstep_cnt):
             # Generate input spike train from image
@@ -79,6 +80,14 @@ for epoch in range(epoch_cnt):
                         mempot_old = mempot[layer+1][neu_post]
                         mempot[layer+1][neu_post] = ((mempot_old * 2 ** decay) - mempot_old) / 2 ** decay
 
+                # Update spike traces
+                for neu_pre in range(neurons[layer]):
+                    trace = traces[layer][tstep][neu_pre]
+                    traces[layer][tstep+1][neu_pre] = ((trace * 2 ** decay) - trace) / 2 ** decay
+
+                    if spikes[layer][tstep][neu_pre]:
+                        traces[layer][tstep+1][neu_pre] += 1
+
         if debug:
             print(np.sum(spikes[-1], axis=0))
 
@@ -103,10 +112,10 @@ for epoch in range(epoch_cnt):
                 # Output layer
                 for neu_pre in range(neurons[layer]):
                     if neu_pre == label:
-                        desire[layer-1][neu_pre][0] = (1 - np.sum(spikes[layer][:,neu_pre]) / tstep_cnt) >= desire_thres["output"]
+                        desire[layer-1][neu_pre][0] = (1 - np.sum(spikes[layer][:,neu_pre]) / tstep_cnt) > desire_thres["output"]
                         desire[layer-1][neu_pre][1] = True
                     else:
-                        desire[layer-1][neu_pre][0] = (np.sum(spikes[layer][:,neu_pre]) / tstep_cnt) >= desire_thres["output"]
+                        desire[layer-1][neu_pre][0] = (np.sum(spikes[layer][:,neu_pre]) / tstep_cnt) > desire_thres["output"]
                         desire[layer-1][neu_pre][1] = False
 
             for layer in range(layer_cnt - 1, 0, -1):
@@ -124,54 +133,14 @@ for epoch in range(epoch_cnt):
                     desire[layer-1][neu_pre][0] = np.abs(desire_sum) >= desire_thres["hidden"]
                     desire[layer-1][neu_pre][1] = desire_sum > 0
 
-            # Reset spikes and membrane potentials
-            for layer in range(layer_cnt + 1):
-                mempot[layer] = np.zeros(neurons[layer], dtype=np.float)
-                spikes[layer] = np.zeros((tstep_cnt + 1, neurons[layer]), dtype=np.bool)
-                if layer < layer_cnt:
-                    traces[layer] = np.zeros((tstep_cnt + 1, neurons[layer]), dtype=np.float)
-
-            # Process spikes and learn
+            # Update weights
             for tstep in range(tstep_cnt):
-                # Generate input spike train from image
-                for neu_in in range(neurons[0]):
-                    mempot[0][neu_in] += image[neu_in]
-                    if mempot[0][neu_in] >= mempot_thres:
-                        spikes[0][tstep][neu_in] = True
-                        mempot[0][neu_in] -= mempot_thres
-
-                # Propagate spikes forward
                 for layer in range(layer_cnt):
                     for neu_post in range(neurons[layer+1]):
-                        # Update membrane potential
-                        for neu_pre in range(neurons[layer]):
-                            if spikes[layer][tstep][neu_pre]:
-                                mempot[layer+1][neu_post] += weights[layer][neu_pre][neu_post]
-
-                        # Calculate output spikes and decay membrane potential
-                        if mempot[layer+1][neu_post] >= mempot_thres:
-                            spikes[layer+1][tstep+1][neu_post] = True
-                            mempot[layer+1][neu_post] -= mempot_thres
-                        else:
-                            mempot_old = mempot[layer+1][neu_post]
-                            mempot[layer+1][neu_post] = ((mempot_old * 2 ** decay) - mempot_old) / 2 ** decay
-
-                    # Update spike traces
-                    for neu_pre in range(neurons[layer]):
-                        trace = traces[layer][tstep][neu_pre]
-                        traces[layer][tstep+1][neu_pre] = ((trace * 2 ** decay) - trace) / 2 ** decay
-
-                        if spikes[layer][tstep][neu_pre]:
-                            traces[layer][tstep+1][neu_pre] += 1
-
-                    # Update weights
-                    if train_ntest:
-                        for neu_post in range(neurons[layer+1]):
-                            if spikes[layer+1][tstep+1][neu_post]:
-                                for neu_pre in range(neurons[layer]):
-                                    if desire[layer][neu_post][0]:
-                                        update = learning_rate * traces[layer][tstep+1][neu_pre]
-                                        weights[layer][neu_pre][neu_post] += (1 if desire[layer][neu_post][1] else -1) * update
+                        if spikes[layer+1][tstep+1][neu_post] and desire[layer][neu_post][0]:
+                            for neu_pre in range(neurons[layer]):
+                                update = learning_rate * traces[layer][tstep+1][neu_pre]
+                                weights[layer][neu_pre][neu_post] += (1 if desire[layer][neu_post][1] else -1) * update
 
     # Save network model
     if train_ntest:
