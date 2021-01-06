@@ -21,6 +21,9 @@ class snn_linear(nn.Module):
         nn.init.kaiming_normal_(self.weights)
         self.weights.requires_grad = False
 
+        # Loss function
+        self.loss = nn.L1Loss(reduction="none")
+
         self.reset()
 
     def forward(self, spikes_in, tstep, traces=False):
@@ -39,10 +42,9 @@ class snn_linear(nn.Module):
         if traces: self.gen_traces(spikes_in, tstep)
 
     def backward(self, desire_in):
-        # Output error for desired and undesired neurons
-        error_ndes = torch.sum(self.spikes.type(torch.float32), dim=0).div(self.tstep_cnt)
-        error_des  = error_ndes.neg().add(1)
-        error      = error_des.mul(desire_in[:, 1]) + error_ndes.mul(desire_in[:, 1].logical_not())
+        # Output error
+        spikes_sum = torch.sum(self.spikes.type(torch.float32), dim=0)
+        error = self.loss(desire_in[:, 1].type(torch.float32), spikes_sum.div(self.tstep_cnt))
 
         # Sum weights and errors
         sign = desire_in[:, 1].mul(2).sub(1)
