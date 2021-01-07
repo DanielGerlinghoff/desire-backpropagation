@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from torchvision import datasets, transforms
 import numpy as np
+import math
 import argparse
 
 # Define layers
@@ -14,7 +15,7 @@ class snn_linear(nn.Module):
         self.neu_post_cnt = neu_out
         self.hyp          = hyp
         self.tstep_cnt    = hyp.tsteps
-        self.decay        = (2 ** hyp.decay - 1) / 2 ** hyp.decay
+        self.decay        = (2 ** hyp.mempot_decay - 1) / 2 ** hyp.mempot_decay
 
         # Network parameters
         self.weights = nn.Parameter(torch.randn(neu_out, neu_in))
@@ -143,6 +144,7 @@ class snn_optim(torch.optim.Optimizer):
     def __init__(self, model, hyp):
         self.model = model
         self.hyp   = hyp
+        self.lr    = hyp.lr
         defaults = dict()
 
         super().__init__(model.parameters(), defaults)
@@ -154,7 +156,11 @@ class snn_optim(torch.optim.Optimizer):
             update = layer.traces.repeat(layer.neu_post_cnt, 1, 1).permute(1, 0, 2)
             update.mul_(torch.mul(cond, sign).repeat(layer.neu_pre_cnt, 1, 1).permute(1, 2, 0))
 
-            layer.weights.add_(torch.sum(update, dim=0), alpha=self.hyp.learning_rate)
+            layer.weights.add_(torch.sum(update, dim=0), alpha=self.lr)
+
+    def scheduler(self, epoch):
+        # Exponential decay
+        self.lr = self.hyp.lr * math.exp(-self.hyp.lr_decay * epoch)
 
 # Define result computation
 class snn_result:
@@ -187,19 +193,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Hyper-parameters for desire backpropagation")
     parser.add_argument("--tsteps", default=20, type=int, help="Number of time steps per image")
     parser.add_argument("--epochs", default=50, type=int, help="Number of epochs")
+    parser.add_argument("--lr", default=4.e-4, type=float, help="Learning rate for weight updates")
+    parser.add_argument("--lr_decay", default=5e-2, type=float, help="Exponential decay for learning rate")
     parser.add_argument("--mempot_thres", default=1.0, type=float, help="Spike threshold for membrane potential")
-    parser.add_argument("--learning_rate", default=1.e-4, type=float, help="Lerning rate for weight updates")
-    parser.add_argument("--decay", default=1, type=int, help="Decay for membrane potential and spike traces")
+    parser.add_argument("--mempot_decay", default=1, type=int, help="Decay rate for membrane potential and spike traces")
     parser.add_argument("--desire_thres", default=[0.05, 0.30], nargs=2, type=float, help="Hidden and output threshold for desire backpropagation")
     parser.add_argument("--shuffle_data", default=False, type=bool, help="Shuffle training dataset before every epoch")
     parser.add_argument("--random_seed", default=0, type=int, help="Random seed for weight initialization")
 
     hyper_pars = parser.parse_args()
-    hyper_pars.neurons       = (784, 512, 256, 10)
-    hyper_pars.learning_rate = hyper_pars.learning_rate / hyper_pars.tsteps
-    hyper_pars.desire_thres  = {"hid": hyper_pars.desire_thres[0], "out": hyper_pars.desire_thres[1]}
-    hyper_pars.gpu_ncpu      = torch.cuda.is_available()
-    hyper_pars.device        = torch.device('cuda' if hyper_pars.gpu_ncpu else 'cpu')
+    hyper_pars.neurons      = (784, 512, 256, 10)
+    hyper_pars.lr           = hyper_pars.lr / hyper_pars.tsteps
+    hyper_pars.desire_thres = {"hid": hyper_pars.desire_thres[0], "out": hyper_pars.desire_thres[1]}
+    hyper_pars.gpu_ncpu     = torch.cuda.is_available()
+    hyper_pars.device       = torch.device('cuda' if hyper_pars.gpu_ncpu else 'cpu')
 
     # Network configuration
     torch.set_default_tensor_type(torch.cuda.FloatTensor if hyper_pars.gpu_ncpu else torch.FloatTensor)
@@ -220,6 +227,7 @@ if __name__ == "__main__":
         # Training
         model.train()
         resul.reset()
+        optim.scheduler(epoch)
 
         if hyper_pars.shuffle_data: dataorder_train = torch.randperm(len(dataset_train))
         else: dataorder_train = torch.arange(0, len(dataset_train), dtype=torch.int)
