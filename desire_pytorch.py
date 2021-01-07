@@ -186,12 +186,12 @@ if __name__ == "__main__":
     # Parse hyper-parameters
     parser = argparse.ArgumentParser(description="Hyper-parameters for desire backpropagation")
     parser.add_argument("--tsteps", default=20, type=int, help="Number of time steps per image")
-    parser.add_argument("--epochs", default=10, type=int, help="Number of epochs")
+    parser.add_argument("--epochs", default=50, type=int, help="Number of epochs")
     parser.add_argument("--mempot_thres", default=1.0, type=float, help="Spike threshold for membrane potential")
     parser.add_argument("--learning_rate", default=1.e-4, type=float, help="Lerning rate for weight updates")
     parser.add_argument("--decay", default=1, type=int, help="Decay for membrane potential and spike traces")
-    parser.add_argument("--desire_thres", default=[0.1, 0.0], nargs=2, type=float, help="Hidden and output threshold for desire backpropagation")
-    parser.add_argument("--shuffle_data", default=True, type=bool, help="Shuffle training dataset before every epoch")
+    parser.add_argument("--desire_thres", default=[0.05, 0.30], nargs=2, type=float, help="Hidden and output threshold for desire backpropagation")
+    parser.add_argument("--shuffle_data", default=False, type=bool, help="Shuffle training dataset before every epoch")
     parser.add_argument("--random_seed", default=0, type=int, help="Random seed for weight initialization")
 
     hyper_pars = parser.parse_args()
