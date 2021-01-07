@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from torchvision import datasets, transforms
 import numpy as np
-import itertools
+import argparse
 
 # Define layers
 class snn_linear(nn.Module):
@@ -13,8 +13,8 @@ class snn_linear(nn.Module):
         self.neu_pre_cnt  = neu_in
         self.neu_post_cnt = neu_out
         self.hyp          = hyp
-        self.tstep_cnt    = hyp["tsteps"]
-        self.decay        = (2 ** hyp["decay"] - 1) / 2 ** hyp["decay"]
+        self.tstep_cnt    = hyp.tsteps
+        self.decay        = (2 ** hyp.decay - 1) / 2 ** hyp.decay
 
         # Network parameters
         self.weights = nn.Parameter(torch.randn(neu_out, neu_in))
@@ -29,8 +29,8 @@ class snn_linear(nn.Module):
     def forward(self, spikes_in, tstep, traces=False):
         # Update membrane potential
         self.mempot.addmv_(self.weights, spikes_in.type(torch.float32))
-        mempot_ge_thres = self.mempot.ge(self.hyp["mempot_thres"])
-        self.mempot.sub_(mempot_ge_thres.type(torch.int), alpha=self.hyp["mempot_thres"])
+        mempot_ge_thres = self.mempot.ge(self.hyp.mempot_thres)
+        self.mempot.sub_(mempot_ge_thres.type(torch.int), alpha=self.hyp.mempot_thres)
 
         # Calculate output spikes
         self.spikes[tstep+1] = mempot_ge_thres
@@ -53,7 +53,7 @@ class snn_linear(nn.Module):
         desire_sum = torch.sum(self.weights.mul(torch.mul(error, sign).repeat(self.neu_pre_cnt, 1).t()), dim=0)
 
         # Desire of previous layer
-        desire_out_0 = desire_sum.abs().ge(self.hyp["desire_thres"]["hidden"])
+        desire_out_0 = desire_sum.abs().ge(self.hyp.desire_thres["hid"])
         desire_out_1 = desire_sum.gt(0)
         desire_out   = torch.stack((desire_out_0, desire_out_1), dim=1)
 
@@ -74,7 +74,7 @@ class snn_input(nn.Module):
         super().__init__()
         self.neu_in_cnt = neu_in
         self.hyp        = hyp
-        self.tstep_cnt  = hyp["tsteps"]
+        self.tstep_cnt  = hyp.tsteps
 
         # Network parameters
         self.reset()
@@ -82,8 +82,8 @@ class snn_input(nn.Module):
     def forward(self, image, tstep):
         # Update membrane potential
         self.mempot.add_(image)
-        mempot_ge_thres = self.mempot.ge(self.hyp["mempot_thres"])
-        self.mempot.sub_(mempot_ge_thres.type(torch.int), alpha=self.hyp["mempot_thres"])
+        mempot_ge_thres = self.mempot.ge(self.hyp.mempot_thres)
+        self.mempot.sub_(mempot_ge_thres.type(torch.int), alpha=self.hyp.mempot_thres)
 
         # Calculate output spikes
         self.spikes[tstep] = mempot_ge_thres
@@ -99,7 +99,7 @@ class snn_model(nn.Module):
         self.hyp = hyp
 
         # Layers
-        neurons = hyp["neurons"]
+        neurons = hyp.neurons
 
         self.flat = nn.Flatten(0, -1)
         self.inp  = snn_input(neurons[0], hyp)
@@ -116,7 +116,7 @@ class snn_model(nn.Module):
 
         # Process spikes
         image = self.flat(image)
-        for tstep in range(self.hyp["tsteps"]):
+        for tstep in range(self.hyp.tsteps):
             self.inp(image, tstep)
             self.lin1(self.inp.spikes[tstep], tstep, traces=self.training)
             self.lin2(self.lin1.spikes[tstep], tstep, traces=self.training)
@@ -126,10 +126,10 @@ class snn_model(nn.Module):
 
     def backward(self, label):
         # Desire of output layer
-        error = torch.sum(self.lin3.spikes.type(torch.float32), dim=0).div(self.hyp["tsteps"])
+        error = torch.sum(self.lin3.spikes.type(torch.float32), dim=0).div(self.hyp.tsteps)
         error[label].neg_().add_(1)
 
-        desire_0 = error.gt(self.hyp["desire_thres"]["output"])
+        desire_0 = error.gt(self.hyp.desire_thres["out"])
         desire_1 = torch.zeros_like(desire_0)
         desire_1[label] = True
         self.lin3.desire = torch.stack((desire_0, desire_1), dim=1)
@@ -154,48 +154,56 @@ class snn_optim(torch.optim.Optimizer):
             update = layer.traces.repeat(layer.neu_post_cnt, 1, 1).permute(1, 0, 2)
             update.mul_(torch.mul(cond, sign).repeat(layer.neu_pre_cnt, 1, 1).permute(1, 2, 0))
 
-            layer.weights.add_(torch.sum(update, dim=0), alpha=self.hyp["learning_rate"])
+            layer.weights.add_(torch.sum(update, dim=0), alpha=self.hyp.learning_rate)
 
 # Define result computation
 class snn_result:
     def __init__(self, hyp):
-        self.neu_out = hyp["neurons"][-1]
+        self.neu_out = hyp.neurons[-1]
         self.results = None
         self.logfile = open(os.path.splitext(os.path.basename(__file__))[0] + ".log", "w", buffering=1)
 
     def register(self, spikes, label):
         spikes_max = torch.max(spikes)
-        if spikes[label] == spikes_max:
-            self.results[label][label] += 1
+        spikes_cnt = torch.bincount(spikes)
+        if spikes[label] == spikes_max and spikes_cnt[spikes_max] == 1:
+            self.results[0] += 1
         else:
-            self.results[label][torch.argmax(spikes)] += 1
+            self.results[1] += 1
 
     def print(self, epoch, desc, length):
-        accuracy = self.results.diag().sum() / length * 100
-        print("Epoch {:2d} {desc:s}: {:.2f}%".format(epoch, accuracy), file=self.logfile)
+        accuracy = self.results[0] / self.results.sum() * 100
+        print("Epoch {:2d} {:s}: {:.2f}%".format(epoch, desc, accuracy), file=self.logfile)
 
     def reset(self):
-        self.results = torch.zeros((self.neu_out, self.neu_out), dtype=torch.int)
+        self.results = torch.zeros(2, dtype=torch.int)
 
     def finish(self):
         self.logfile.close()
 
 
 if __name__ == "__main__":
-    # Network configuration
-    hyper_pars = dict()
-    hyper_pars["neurons"]       = (784, 512, 256, 10)
-    hyper_pars["tsteps"]        = 20
-    hyper_pars["mempot_thres"]  = 1.0
-    hyper_pars["learning_rate"] = 1.e-4 / hyper_pars["tsteps"]
-    hyper_pars["decay"]         = 1
-    hyper_pars["desire_thres"]  = {"hidden": 0.1, "output": 0.0}
-    hyper_pars["shuffle_data"]  = True
-    hyper_pars["gpu_ncpu"]      = torch.cuda.is_available()
-    hyper_pars["device"]        = torch.device('cuda' if hyper_pars["gpu_ncpu"] else 'cpu')
+    # Parse hyper-parameters
+    parser = argparse.ArgumentParser(description="Hyper-parameters for desire backpropagation")
+    parser.add_argument("--tsteps", default=20, type=int, help="Number of time steps per image")
+    parser.add_argument("--epochs", default=10, type=int, help="Number of epochs")
+    parser.add_argument("--mempot_thres", default=1.0, type=float, help="Spike threshold for membrane potential")
+    parser.add_argument("--learning_rate", default=1.e-4, type=float, help="Lerning rate for weight updates")
+    parser.add_argument("--decay", default=1, type=int, help="Decay for membrane potential and spike traces")
+    parser.add_argument("--desire_thres", default=[0.1, 0.0], nargs=2, type=float, help="Hidden and output threshold for desire backpropagation")
+    parser.add_argument("--shuffle_data", default=True, type=bool, help="Shuffle training dataset before every epoch")
+    parser.add_argument("--random_seed", default=0, type=int, help="Random seed for weight initialization")
 
-    torch.set_default_tensor_type(torch.cuda.FloatTensor if hyper_pars["gpu_ncpu"] else torch.FloatTensor)
-    torch.manual_seed(0)
+    hyper_pars = parser.parse_args()
+    hyper_pars.neurons       = (784, 512, 256, 10)
+    hyper_pars.learning_rate = hyper_pars.learning_rate / hyper_pars.tsteps
+    hyper_pars.desire_thres  = {"hid": hyper_pars.desire_thres[0], "out": hyper_pars.desire_thres[1]}
+    hyper_pars.gpu_ncpu      = torch.cuda.is_available()
+    hyper_pars.device        = torch.device('cuda' if hyper_pars.gpu_ncpu else 'cpu')
+
+    # Network configuration
+    torch.set_default_tensor_type(torch.cuda.FloatTensor if hyper_pars.gpu_ncpu else torch.FloatTensor)
+    torch.manual_seed(hyper_pars.random_seed)
 
     model = snn_model(hyper_pars)
     optim = snn_optim(model, hyper_pars)
@@ -204,22 +212,21 @@ if __name__ == "__main__":
     # Iterate over MNIST images
     dataset_train = datasets.MNIST("data", train=True, download=True, transform=transforms.ToTensor())
     dataset_test  = datasets.MNIST("data", train=False, download=True, transform=transforms.ToTensor())
-    epoch_cnt = 10
-    debug     = True
+    debug = True
 
-    for epoch in range(epoch_cnt):
+    for epoch in range(hyper_pars.epochs):
         if debug: print(f"Epoch: {epoch}")
 
         # Training
         model.train()
         resul.reset()
 
-        if hyper_pars["shuffle_data"]: dataorder_train = torch.randperm(len(dataset_train))
+        if hyper_pars.shuffle_data: dataorder_train = torch.randperm(len(dataset_train))
         else: dataorder_train = torch.arange(0, len(dataset_train), dtype=torch.int)
 
         for (image_cnt, image_idx) in enumerate(dataorder_train):
-            image = dataset_train[image_idx][0].to(hyper_pars["device"])
-            label = torch.tensor(dataset_train[image_idx][1]).to(hyper_pars["device"])
+            image = dataset_train[image_idx][0].to(hyper_pars.device)
+            label = torch.tensor(dataset_train[image_idx][1]).to(hyper_pars.device)
             if debug: print(f"Image {image_cnt}: {label}")
 
             spikes_out = torch.sum(model(image), dim=0)
@@ -235,7 +242,7 @@ if __name__ == "__main__":
         model.eval()
         resul.reset()
         for (image_cnt, (image, label)) in enumerate(dataset_test):
-            image, label = image.to(hyper_pars["device"]), torch.tensor(label).to(hyper_pars["device"])
+            image, label = image.to(hyper_pars.device), torch.tensor(label).to(hyper_pars.device)
             if debug: print(f"Image {image_cnt}: {label}")
 
             spikes_out = torch.sum(model(image), dim=0)
