@@ -200,6 +200,7 @@ if __name__ == "__main__":
     parser.add_argument("--desire_thres", default=[0.05, 0.30], nargs=2, type=float, help="Hidden and output threshold for desire backpropagation")
     parser.add_argument("--shuffle_data", default=False, type=bool, help="Shuffle training dataset before every epoch")
     parser.add_argument("--random_seed", default=0, type=int, help="Random seed for weight initialization")
+    parser.add_argument("--model_path", default="", type=str, help="Give path to load trained model")
 
     hyper_pars = parser.parse_args()
     hyper_pars.neurons      = (784, 512, 256, 10)
@@ -215,6 +216,9 @@ if __name__ == "__main__":
     model = snn_model(hyper_pars)
     optim = snn_optim(model, hyper_pars)
     resul = snn_result(hyper_pars)
+
+    if hyper_pars.model_path:
+        model.load_state_dict(torch.load(hyper_pars.model_path))
 
     # Iterate over MNIST images
     dataset_train = datasets.MNIST("data", train=True, download=True, transform=transforms.ToTensor())
@@ -259,5 +263,7 @@ if __name__ == "__main__":
 
         resul.print(epoch, "Test", len(dataset_test))
 
-resul.finish()
+    # Export model
+    torch.save(model.state_dict(), os.path.splitext(os.path.basename(__file__))[0] + ".pt")
+    resul.finish()
 
