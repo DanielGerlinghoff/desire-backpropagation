@@ -43,7 +43,7 @@ for epoch in range(epoch_cnt):
     for (image_idx, (image, label)) in enumerate(itertools.islice(dataset, image_cnt)):
         if debug: print(f"Image {image_idx}: {label}")
         if image_idx % debug_period == 0:
-            results = np.zeros((neurons[-1], neurons[-1]), dtype=np.int)
+            results = np.zeros(2, dtype=np.int)
 
         # Reset spikes and membrane potentials
         for layer in range(layer_cnt + 1):
@@ -94,15 +94,15 @@ for epoch in range(epoch_cnt):
         # Compare output with label
         spikes_out = np.sum(spikes[-1], axis=0)
         spikes_max = np.max(spikes_out)
-        if spikes_out[label] == spikes_max:
-            results[label][label] += 1
+        spikes_cnt = np.bincount(spikes_out)
+        if spikes_out[label] == spikes_max and spikes_cnt[spikes_max] == 1:
+            results[0] += 1
         else:
-            results[label][np.argmax(spikes_out)] += 1
+            results[1] += 1
 
         if image_idx % debug_period == debug_period - 1:
-            print(f"Epoch: {epoch}, Image: {image_idx}", file=logfile)
-            print(results, file=logfile)
-            print("Accuracy: {:.2f}%".format(sum([results[idx, idx] for idx in range(neurons[-1])]) / debug_period * 100), file=logfile)
+            accuracy = results[0] / results.sum() * 100
+            print("Epoch {:2d} Image {:5d}: {:.2f}%".format(epoch, image_idx, accuracy), file=logfile)
             logfile.flush()
 
         # Training portion
