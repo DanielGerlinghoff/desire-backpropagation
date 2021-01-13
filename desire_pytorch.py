@@ -1,15 +1,81 @@
 import os
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torchvision import datasets, transforms
 import numpy as np
 import argparse
 
 # Define layers
-class snn_linear(nn.Module):
-    def __init__(self, idx, neu_in, neu_out, hyp):
+class snn_conv(nn.Module):
+    def __init__(self, chn_in, chn_out, dim_k, dim_in, hyp):
         super().__init__()
-        self.idx          = idx
+        self.chn_in_cnt  = chn_in
+        self.chn_out_cnt = chn_out
+        self.dim_k       = dim_k
+        self.dim_in      = dim_in
+        self.dim_out     = dim_in - dim_k + 1
+        self.hyp         = hyp
+        self.tstep_cnt   = hyp.tsteps
+        self.decay       = (2 ** hyp.decay - 1) / 2 ** hyp.decay
+
+        # Netowrk parameters
+        self.weights = nn.Parameter(torch.empty(chn_out, chn_in, dim_k, dim_k))
+        nn.init.kaiming_normal_(self.weights)
+        self.weights.requires_grad = False
+
+        # Loss function
+        self.loss = nn.L1Loss(reduction="none")
+
+        self.reset()
+
+    def forward(self, spikes_in, tstep, traces=False):
+        # Update membrane potential
+        self.mempot.add_(F.conv2d(spikes_in.unsqueeze(0).type(torch.float32), self.weights).squeeze(0))
+        mempot_ge_thres = self.mempot.ge(self.hyp.mempot_thres)
+        self.mempot.sub_(mempot_ge_thres.type(torch.int), alpha=self.hyp.mempot_thres)
+
+        # Calculate output spikes
+        self.spikes[tstep+1] = mempot_ge_thres
+
+        # Decay membrane potential
+        self.mempot.mul_(mempot_ge_thres.logical_not().mul(self.decay).add(mempot_ge_thres))
+
+        # Generate traces
+        if traces: self.gen_traces(spikes_in, tstep)
+
+    def backward(self, desire_in):
+        # Output error
+        spikes_sum = torch.sum(self.spikes.type(torch.float32), dim=0)
+        error = self.loss(desire_in[..., 1].type(torch.float32), spikes_sum.div(self.tstep_cnt))
+
+        # Sum weights and errors
+        sign = desire_in[..., 1].mul(2).sub(1)
+        sign.mul_(desire_in[..., 0])
+
+        weights_flip = self.weights.flip((2, 3)).permute(1, 0, 2, 3)
+        desire_sum   = F.conv2d(torch.mul(error, sign).unsqueeze(0), weights_flip, padding=self.dim_k-1).squeeze(0)
+
+        # Desire of previous layer
+        desire_out_0 = desire_sum.abs().ge(self.hyp.desire_thres["hid"])
+        desire_out_1 = desire_sum.gt(0)
+        desire_out   = torch.stack((desire_out_0, desire_out_1), dim=-1)
+
+        return desire_out
+
+    def gen_traces(self, spikes_in, tstep):
+        self.traces[tstep+1] = self.traces[tstep].mul(self.decay)
+        self.traces[tstep+1].add_(spikes_in.type(torch.int))
+
+    def reset(self):
+        self.spikes = torch.zeros((self.tstep_cnt + 1, self.chn_out_cnt, self.dim_out, self.dim_out), dtype=torch.bool)
+        self.mempot = torch.zeros((self.chn_out_cnt, self.dim_out, self.dim_out), dtype=torch.float32)
+        self.traces = torch.zeros((self.tstep_cnt + 1, self.chn_in_cnt, self.dim_in, self.dim_in), dtype=torch.float32)
+        self.desire = torch.zeros((self.chn_out_cnt, self.dim_out, self.dim_out, 2), dtype=torch.bool)
+
+class snn_linear(nn.Module):
+    def __init__(self, neu_in, neu_out, hyp):
+        super().__init__()
         self.neu_pre_cnt  = neu_in
         self.neu_post_cnt = neu_out
         self.hyp          = hyp
@@ -17,7 +83,7 @@ class snn_linear(nn.Module):
         self.decay        = (2 ** hyp.decay - 1) / 2 ** hyp.decay
 
         # Network parameters
-        self.weights = nn.Parameter(torch.randn(neu_out, neu_in))
+        self.weights = nn.Parameter(torch.empty(neu_out, neu_in))
         nn.init.kaiming_normal_(self.weights)
         self.weights.requires_grad = False
 
@@ -65,16 +131,19 @@ class snn_linear(nn.Module):
 
     def reset(self):
         self.spikes = torch.zeros((self.tstep_cnt + 1, self.neu_post_cnt), dtype=torch.bool)
-        self.mempot = torch.zeros(self.neu_pre_cnt, dtype=torch.float32)
+        self.mempot = torch.zeros(self.neu_post_cnt, dtype=torch.float32)
         self.traces = torch.zeros((self.tstep_cnt + 1, self.neu_pre_cnt), dtype=torch.float32)
         self.desire = torch.zeros((self.neu_post_cnt, 2), dtype=torch.bool)
 
 class snn_input(nn.Module):
-    def __init__(self, neu_in, hyp):
+    def __init__(self, chn_in, dim_in, hyp):
         super().__init__()
-        self.neu_in_cnt = neu_in
-        self.hyp        = hyp
-        self.tstep_cnt  = hyp.tsteps
+        self.chn_in_cnt  = chn_in
+        self.chn_out_cnt = chn_in
+        self.dim_in      = dim_in
+        self.dim_out     = dim_in
+        self.hyp         = hyp
+        self.tstep_cnt   = hyp.tsteps
 
         # Network parameters
         self.reset()
@@ -89,8 +158,31 @@ class snn_input(nn.Module):
         self.spikes[tstep] = mempot_ge_thres
 
     def reset(self):
-        self.spikes = torch.zeros((self.tstep_cnt + 1, self.neu_in_cnt), dtype=torch.bool)
-        self.mempot = torch.zeros(self.neu_in_cnt, dtype=torch.float32)
+        self.spikes = torch.zeros((self.tstep_cnt + 1, self.chn_in_cnt, self.dim_in, self.dim_in), dtype=torch.bool)
+        self.mempot = torch.zeros((self.chn_in_cnt, self.dim_in, self.dim_in), dtype=torch.float32)
+
+class snn_flatten(nn.Module):
+    def __init__(self, chn_in, dim_in, hyp):
+        super().__init__()
+        self.chn_in_cnt  = chn_in
+        self.dim_in      = dim_in
+        self.neu_out_cnt = chn_in * dim_in ** 2
+        self.hyp         = hyp
+        self.tstep_cnt   = hyp.tsteps
+
+        # Network parameters
+        self.reset()
+
+    def forward(self, spikes_in, tstep):
+        self.spikes[tstep] = spikes_in.view(-1)
+
+    def backward(self, desire_in):
+        desire_out = desire_in.view(self.chn_in_cnt, self.dim_in, self.dim_in, 2)
+        return desire_out
+
+    def reset(self):
+        self.spikes = torch.zeros((self.tstep_cnt + 1, self.neu_out_cnt), dtype=torch.bool)
+        self.desire = torch.zeros((self.neu_out_cnt, 2), dtype=torch.bool)
 
 # Define network
 class snn_model(nn.Module):
@@ -101,42 +193,50 @@ class snn_model(nn.Module):
         # Layers
         neurons = hyp.neurons
 
-        self.flat = nn.Flatten(0, -1)
-        self.inp  = snn_input(neurons[0], hyp)
-        self.lin1 = snn_linear(0, neurons[0], neurons[1], hyp)
-        self.lin2 = snn_linear(1, neurons[1], neurons[2], hyp)
-        self.lin3 = snn_linear(2, neurons[2], neurons[3], hyp)
+        self.scale = nn.AvgPool2d(2)
+        self.inp   = snn_input(1, neurons[0], hyp)
+        self.conv1 = snn_conv(self.inp.chn_out_cnt, 10, 5, self.inp.dim_out, hyp)
+        self.conv2 = snn_conv(self.conv1.chn_out_cnt, 20, 5, self.conv1.dim_out, hyp)
+        self.flat  = snn_flatten(self.conv2.chn_out_cnt, self.conv2.dim_out, hyp)
+        self.lin1  = snn_linear(self.flat.neu_out_cnt, neurons[1], hyp)
+        self.lin2  = snn_linear(neurons[1], neurons[2], hyp)
 
     def forward(self, image):
         # Reset membrane potentials
         self.inp.reset()
+        self.conv1.reset()
+        self.conv2.reset()
+        self.flat.reset()
         self.lin1.reset()
         self.lin2.reset()
-        self.lin3.reset()
 
         # Process spikes
-        image = self.flat(image)
+        image = self.scale(image)
         for tstep in range(self.hyp.tsteps):
             self.inp(image, tstep)
-            self.lin1(self.inp.spikes[tstep], tstep, traces=self.training)
+            self.conv1(self.inp.spikes[tstep], tstep, traces=self.training)
+            self.conv2(self.conv1.spikes[tstep], tstep, traces=self.training)
+            self.flat(self.conv2.spikes[tstep], tstep)
+            self.lin1(self.flat.spikes[tstep], tstep, traces=self.training)
             self.lin2(self.lin1.spikes[tstep], tstep, traces=self.training)
-            self.lin3(self.lin2.spikes[tstep], tstep, traces=self.training)
 
-        return self.lin3.spikes
+        return self.lin2.spikes
 
     def backward(self, label):
         # Desire of output layer
-        error = torch.sum(self.lin3.spikes.type(torch.float32), dim=0).div(self.hyp.tsteps)
+        error = torch.sum(self.lin2.spikes.type(torch.float32), dim=0).div(self.hyp.tsteps)
         error[label].neg_().add_(1)
 
         desire_0 = error.gt(self.hyp.desire_thres["out"])
         desire_1 = torch.zeros_like(desire_0)
         desire_1[label] = True
-        self.lin3.desire = torch.stack((desire_0, desire_1), dim=1)
+        self.lin2.desire = torch.stack((desire_0, desire_1), dim=1)
 
         # Backpropagate desire
-        self.lin2.desire = self.lin3.backward(self.lin3.desire)
-        self.lin1.desire = self.lin2.backward(self.lin2.desire)
+        self.lin1.desire  = self.lin2.backward(self.lin2.desire)
+        self.flat.desire  = self.lin1.backward(self.lin1.desire)
+        self.conv2.desire = self.flat.backward(self.flat.desire)
+        self.conv1.desire = self.conv2.backward(self.conv2.desire)
 
 # Define optimizer
 class snn_optim(torch.optim.Optimizer):
@@ -148,13 +248,21 @@ class snn_optim(torch.optim.Optimizer):
         super().__init__(model.parameters(), defaults)
 
     def step(self, closure=None):
-        for layer in [self.model.lin1, self.model.lin2, self.model.lin3]:
+        for layer in [self.model.conv1, self.model.conv2]:
+            cond = torch.logical_and(layer.spikes, layer.desire[..., 0].expand_as(layer.spikes))
+            sign = layer.desire[..., 1].mul(2).sub(1).expand_as(cond).type(torch.float32)
+            for chn_in in range(layer.chn_in_cnt):
+                update = F.conv2d(layer.traces[:, chn_in, ...].unsqueeze(0), torch.mul(cond, sign).permute(1, 0, 2, 3)).squeeze(0)
+                layer.weights[:, chn_in, ...].add_(update, alpha=self.hyp.learning_rate)
+
+        for layer in [self.model.lin1, self.model.lin2]:
             cond   = torch.logical_and(layer.spikes, layer.desire[:, 0].repeat(layer.tstep_cnt + 1, 1))
             sign   = layer.desire[:, 1].mul(2).sub(1).repeat(layer.tstep_cnt + 1, 1)
             update = layer.traces.repeat(layer.neu_post_cnt, 1, 1).permute(1, 0, 2)
             update.mul_(torch.mul(cond, sign).repeat(layer.neu_pre_cnt, 1, 1).permute(1, 2, 0))
 
             layer.weights.add_(torch.sum(update, dim=0), alpha=self.hyp.learning_rate)
+
 
 # Define result computation
 class snn_result:
@@ -195,7 +303,7 @@ if __name__ == "__main__":
     parser.add_argument("--random_seed", default=0, type=int, help="Random seed for weight initialization")
 
     hyper_pars = parser.parse_args()
-    hyper_pars.neurons       = (784, 512, 256, 10)
+    hyper_pars.neurons       = (14, 100, 10)
     hyper_pars.learning_rate = hyper_pars.learning_rate / hyper_pars.tsteps
     hyper_pars.desire_thres  = {"hid": hyper_pars.desire_thres[0], "out": hyper_pars.desire_thres[1]}
     hyper_pars.gpu_ncpu      = torch.cuda.is_available()
