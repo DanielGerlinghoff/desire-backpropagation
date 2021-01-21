@@ -325,6 +325,9 @@ if __name__ == "__main__":
     dataset_test  = datasets.MNIST("data", train=False, download=True, transform=transforms.ToTensor())
     debug = True
 
+    if debug:
+        debugfile = open(os.path.splitext(os.path.basename(__file__))[0] + ".dbg", "w", buffering=1)
+
     for epoch in range(hyper_pars.epochs):
         if debug: print(f"Epoch: {epoch}")
 
@@ -349,6 +352,25 @@ if __name__ == "__main__":
 
         resul.print(epoch, "Training", len(dataset_train))
 
+        # Analyse model parameters
+        if debug:
+            print(f"Epoch: {epoch}", file=debugfile)
+            for idx, layer in enumerate(model.layers):
+                if type(layer) not in (snn_conv, snn_linear): continue
+
+                print(f"Layer: {idx}", file=debugfile)
+                if type(layer) == snn_conv:
+                    mean = layer.weights.mean([2, 3])
+                    std  = layer.weights.std([2, 3])
+                elif type(layer) == snn_linear:
+                    mean = layer.weights.mean(1)
+                    std  = layer.weights.std(1)
+
+                print("Mean:", file=debugfile)
+                print(np.array(mean.cpu()), file=debugfile)
+                print("Standard Deviation:", file=debugfile)
+                print(np.array(std.cpu()), file=debugfile)
+
         # Inference
         model.eval()
         resul.reset()
@@ -363,4 +385,5 @@ if __name__ == "__main__":
         resul.print(epoch, "Test", len(dataset_test))
 
 resul.finish()
+debugfile.close()
 
