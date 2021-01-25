@@ -242,16 +242,16 @@ class snn_optim(torch.optim.Optimizer):
 
         super().__init__(model.parameters(), defaults)
 
-    def step(self, closure=None):
+    def step(self, train_conv=True, train_linear=True):
         for layer in self.model.layers:
-            if type(layer) == snn_conv:
+            if type(layer) == snn_conv and train_conv:
                 cond = torch.logical_and(layer.spikes, layer.desire[..., 0].expand_as(layer.spikes))
                 sign = layer.desire[..., 1].mul(2).sub(1).expand_as(cond).type(torch.float32)
                 for chn in range(layer.chn_in):
                     update = F.conv2d(layer.traces[:, chn, ...].unsqueeze(0), torch.mul(cond, sign).permute(1, 0, 2, 3)).squeeze(0)
                     layer.weights[:, chn, ...].add_(update, alpha=self.hyp.learning_rate)
 
-            elif type(layer) == snn_linear:
+            elif type(layer) == snn_linear and train_linear:
                 cond   = torch.logical_and(layer.spikes, layer.desire[:, 0].repeat(layer.tsteps + 1, 1))
                 sign   = layer.desire[:, 1].mul(2).sub(1).repeat(layer.tsteps + 1, 1)
                 update = layer.traces.repeat(layer.neu_post, 1, 1).permute(1, 0, 2)
@@ -325,9 +325,6 @@ if __name__ == "__main__":
     dataset_test  = datasets.MNIST("data", train=False, download=True, transform=transforms.ToTensor())
     debug = True
 
-    if debug:
-        debugfile = open(os.path.splitext(os.path.basename(__file__))[0] + ".dbg", "w", buffering=1)
-
     for epoch in range(hyper_pars.epochs):
         if debug: print(f"Epoch: {epoch}")
 
@@ -348,28 +345,10 @@ if __name__ == "__main__":
             resul.register(spikes_out, label)
 
             model.backward(label)
-            optim.step()
+            linear_nconv = epoch % 2 == 0
+            optim.step(train_conv=(not linear_nconv), train_linear=linear_nconv)
 
         resul.print(epoch, "Training", len(dataset_train))
-
-        # Analyse model parameters
-        if debug:
-            print(f"Epoch: {epoch}", file=debugfile)
-            for idx, layer in enumerate(model.layers):
-                if type(layer) not in (snn_conv, snn_linear): continue
-
-                print(f"Layer: {idx}", file=debugfile)
-                if type(layer) == snn_conv:
-                    mean = layer.weights.mean([2, 3])
-                    std  = layer.weights.std([2, 3])
-                elif type(layer) == snn_linear:
-                    mean = layer.weights.mean(1)
-                    std  = layer.weights.std(1)
-
-                print("Mean:", file=debugfile)
-                print(np.array(mean.cpu()), file=debugfile)
-                print("Standard Deviation:", file=debugfile)
-                print(np.array(std.cpu()), file=debugfile)
 
         # Inference
         model.eval()
@@ -385,5 +364,4 @@ if __name__ == "__main__":
         resul.print(epoch, "Test", len(dataset_test))
 
 resul.finish()
-debugfile.close()
 
