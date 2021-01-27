@@ -47,7 +47,7 @@ class snn_conv(nn.Module):
     def backward(self, desire_in):
         # Output error
         spikes_sum = torch.sum(self.spikes.type(torch.float32), dim=0)
-        error = self.loss(desire_in[..., 1].type(torch.float32), spikes_sum.div(self.tsteps))
+        error = self.loss(desire_in[..., 1].type(torch.float32), spikes_sum.div(self.tsteps - self.hyp.error_margin))
 
         # Sum weights and errors
         sign = desire_in[..., 1].mul(2).sub(1)
@@ -110,7 +110,7 @@ class snn_linear(nn.Module):
     def backward(self, desire_in):
         # Output error
         spikes_sum = torch.sum(self.spikes.type(torch.float32), dim=0)
-        error = self.loss(desire_in[:, 1].type(torch.float32), spikes_sum.div(self.tsteps))
+        error = self.loss(desire_in[:, 1].type(torch.float32), spikes_sum.div(self.tsteps - self.hyp.error_margin))
 
         # Sum weights and errors
         sign = desire_in[:, 1].mul(2).sub(1)
@@ -220,7 +220,7 @@ class snn_model(nn.Module):
 
     def backward(self, label):
         # Desire of output layer
-        error = torch.sum(self.layers[-1].spikes.type(torch.float32), dim=0).div(self.hyp.tsteps)
+        error = torch.sum(self.layers[-1].spikes.type(torch.float32), dim=0).div(self.hyp.tsteps - self.hyp.error_margin)
         error[label].neg_().add_(1)
 
         desire_0 = error.gt(self.hyp.desire_thres["out"])
@@ -243,13 +243,15 @@ class snn_optim(torch.optim.Optimizer):
         super().__init__(model.parameters(), defaults)
 
     def step(self, train_conv=True, train_linear=True):
-        for layer in self.model.layers:
+        for idx, layer in enumerate(self.model.layers):
             if type(layer) == snn_conv and train_conv:
-                cond = torch.logical_and(layer.spikes, layer.desire[..., 0].expand_as(layer.spikes))
-                sign = layer.desire[..., 1].mul(2).sub(1).expand_as(cond).type(torch.float32)
+                spikes_in  = self.model.layers[idx-1].spikes.sum(dim=0).type(torch.float32)
+                spikes_out = layer.spikes.sum(dim=0).type(torch.float32)
+                error = torch.sub(spikes_out.div(layer.tsteps - self.hyp.error_margin), layer.desire[..., 1].type(torch.float32))
+                cond  = layer.desire[..., 0].type(torch.float32)
                 for chn in range(layer.chn_in):
-                    update = F.conv2d(layer.traces[:, chn, ...].unsqueeze(0), torch.mul(cond, sign).permute(1, 0, 2, 3)).squeeze(0)
-                    layer.weights[:, chn, ...].add_(update, alpha=(self.hyp.learning_rate / layer.dim_out ** 2))
+                    update = F.conv2d(spikes_in[chn, None, None], torch.mul(error, cond).unsqueeze(1)).squeeze(0)
+                    layer.weights[:, chn, ...].sub_(update, alpha=(self.hyp.learning_rate / layer.dim_out ** 2))
 
             elif type(layer) == snn_linear and train_linear:
                 cond   = torch.logical_and(layer.spikes, layer.desire[:, 0].repeat(layer.tsteps + 1, 1))
@@ -295,6 +297,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", default=1.e-4, type=float, help="Lerning rate for weight updates")
     parser.add_argument("--decay", default=1, type=int, help="Decay for membrane potential and spike traces")
     parser.add_argument("--desire_thres", default=[0.1, 0.0], nargs=2, type=float, help="Hidden and output threshold for desire backpropagation")
+    parser.add_argument("--error_margin", default=4, type=int, help="Reduction of spikes required to reach zero error")
     parser.add_argument("--shuffle_data", default=True, type=bool, help="Shuffle training dataset before every epoch")
     parser.add_argument("--random_seed", default=0, type=int, help="Random seed for weight initialization")
 
