@@ -10,6 +10,7 @@ import argparse
 class snn_conv(nn.Module):
     def __init__(self, chn_in, chn_out, dim_k, dim_in, hyp):
         super().__init__()
+        self.learnable = True
         self.chn_in  = chn_in
         self.chn_out = chn_out
         self.dim_k   = dim_k
@@ -76,6 +77,7 @@ class snn_conv(nn.Module):
 class snn_linear(nn.Module):
     def __init__(self, neu_in, neu_out, hyp):
         super().__init__()
+        self.learnable = True
         self.neu_pre  = neu_in
         self.neu_post = neu_out
         self.hyp      = hyp
@@ -138,6 +140,7 @@ class snn_linear(nn.Module):
 class snn_input(nn.Module):
     def __init__(self, chn_in, dim_in, hyp):
         super().__init__()
+        self.learnable = False
         self.chn_in  = chn_in
         self.chn_out = chn_in
         self.dim_in  = dim_in
@@ -164,6 +167,7 @@ class snn_input(nn.Module):
 class snn_flatten(nn.Module):
     def __init__(self, chn_in, dim_in, hyp):
         super().__init__()
+        self.learnable = False
         self.chn_in   = chn_in
         self.dim_in   = dim_in
         self.neu_post = chn_in * dim_in ** 2
@@ -242,24 +246,25 @@ class snn_optim(torch.optim.Optimizer):
 
         super().__init__(model.parameters(), defaults)
 
-    def step(self, train_conv=True, train_linear=True):
-        for idx, layer in enumerate(self.model.layers):
-            if type(layer) == snn_conv and train_conv:
-                spikes_in  = self.model.layers[idx-1].spikes.sum(dim=0).type(torch.float32)
-                spikes_out = layer.spikes.sum(dim=0).type(torch.float32)
-                error = torch.sub(spikes_out.div(layer.tsteps - self.hyp.error_margin), layer.desire[..., 1].type(torch.float32))
-                cond  = layer.desire[..., 0].type(torch.float32)
-                for chn in range(layer.chn_in):
-                    update = F.conv2d(spikes_in[chn, None, None], torch.mul(error, cond).unsqueeze(1)).squeeze(0)
-                    layer.weights[:, chn, ...].sub_(update, alpha=(self.hyp.learning_rate / layer.dim_out ** 2))
+    def step(self, idx):
+        layer = self.model.layers[idx]
 
-            elif type(layer) == snn_linear and train_linear:
-                cond   = torch.logical_and(layer.spikes, layer.desire[:, 0].repeat(layer.tsteps + 1, 1))
-                sign   = layer.desire[:, 1].mul(2).sub(1).repeat(layer.tsteps + 1, 1)
-                update = layer.traces.repeat(layer.neu_post, 1, 1).permute(1, 0, 2)
-                update.mul_(torch.mul(cond, sign).repeat(layer.neu_pre, 1, 1).permute(1, 2, 0))
+        if type(layer) == snn_conv:
+            spikes_in  = self.model.layers[idx-1].spikes.sum(dim=0).type(torch.float32)
+            spikes_out = layer.spikes.sum(dim=0).type(torch.float32)
+            error = torch.sub(spikes_out.div(layer.tsteps - self.hyp.error_margin), layer.desire[..., 1].type(torch.float32))
+            cond  = layer.desire[..., 0].type(torch.float32)
+            for chn in range(layer.chn_in):
+                update = F.conv2d(spikes_in[chn, None, None], torch.mul(error, cond).unsqueeze(1)).squeeze(0)
+                layer.weights[:, chn, ...].sub_(update, alpha=(self.hyp.learning_rate / layer.dim_out ** 2))
 
-                layer.weights.add_(torch.sum(update, dim=0), alpha=self.hyp.learning_rate)
+        elif type(layer) == snn_linear:
+            cond   = torch.logical_and(layer.spikes, layer.desire[:, 0].repeat(layer.tsteps + 1, 1))
+            sign   = layer.desire[:, 1].mul(2).sub(1).repeat(layer.tsteps + 1, 1)
+            update = layer.traces.repeat(layer.neu_post, 1, 1).permute(1, 0, 2)
+            update.mul_(torch.mul(cond, sign).repeat(layer.neu_pre, 1, 1).permute(1, 2, 0))
+
+            layer.weights.add_(torch.sum(update, dim=0), alpha=self.hyp.learning_rate)
 
 
 # Define result computation
@@ -343,14 +348,15 @@ if __name__ == "__main__":
             label = torch.tensor(dataset_train[image_idx][1]).to(hyper_pars.device)
             if debug: print(f"Image {image_cnt}: {label}")
 
-            spikes_out = torch.sum(model(image), dim=0)
-            if debug: print(np.array(spikes_out.cpu()))
+            for layer_idx in range(len(model.layers)):
+                if not model.layers[layer_idx].learnable: continue
+                spikes_out = torch.sum(model(image), dim=0)
+                if debug: print(np.array(spikes_out.cpu()))
+
+                model.backward(label)
+                optim.step(layer_idx)
+
             resul.register(spikes_out, label)
-
-            model.backward(label)
-            linear_nconv = epoch % 2 == 0
-            optim.step(train_conv=(not linear_nconv), train_linear=linear_nconv)
-
         resul.print(epoch, "Training", len(dataset_train))
 
         # Inference
