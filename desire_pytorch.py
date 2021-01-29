@@ -256,7 +256,8 @@ class snn_optim(torch.optim.Optimizer):
             cond  = layer.desire[..., 0].type(torch.float32)
             for chn in range(layer.chn_in):
                 update = F.conv2d(spikes_in[chn, None, None], torch.mul(error, cond).unsqueeze(1)).squeeze(0)
-                layer.weights[:, chn, ...].sub_(update, alpha=(self.hyp.learning_rate / layer.dim_out ** 2))
+                limit  = layer.weights[:, chn, ...].pow(4).neg().add(1)
+                layer.weights[:, chn, ...].sub_(torch.mul(update, limit), alpha=(self.hyp.learning_rate / layer.dim_out ** 2))
 
         elif type(layer) == snn_linear:
             cond   = torch.logical_and(layer.spikes, layer.desire[:, 0].repeat(layer.tsteps + 1, 1))
