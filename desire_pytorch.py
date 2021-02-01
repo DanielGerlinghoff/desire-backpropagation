@@ -10,7 +10,6 @@ import argparse
 class snn_conv(nn.Module):
     def __init__(self, chn_in, chn_out, dim_k, dim_in, hyp):
         super().__init__()
-        self.learnable = True
         self.chn_in  = chn_in
         self.chn_out = chn_out
         self.dim_k   = dim_k
@@ -58,7 +57,7 @@ class snn_conv(nn.Module):
         desire_sum   = F.conv2d(torch.mul(error, sign).unsqueeze(0), weights_flip, padding=self.dim_k-1).squeeze(0)
 
         # Desire of previous layer
-        desire_out_0 = desire_sum.abs().ge(self.hyp.desire_thres["hid"])
+        desire_out_0 = desire_sum.abs().ge(self.hyp.desire_thres["conv"])
         desire_out_1 = desire_sum.gt(0)
         desire_out   = torch.stack((desire_out_0, desire_out_1), dim=-1)
 
@@ -77,7 +76,6 @@ class snn_conv(nn.Module):
 class snn_linear(nn.Module):
     def __init__(self, neu_in, neu_out, hyp):
         super().__init__()
-        self.learnable = True
         self.neu_pre  = neu_in
         self.neu_post = neu_out
         self.hyp      = hyp
@@ -121,7 +119,7 @@ class snn_linear(nn.Module):
         desire_sum = torch.sum(self.weights.mul(torch.mul(error, sign).repeat(self.neu_pre, 1).t()), dim=0)
 
         # Desire of previous layer
-        desire_out_0 = desire_sum.abs().ge(self.hyp.desire_thres["hid"])
+        desire_out_0 = desire_sum.abs().ge(self.hyp.desire_thres["lin"])
         desire_out_1 = desire_sum.gt(0)
         desire_out   = torch.stack((desire_out_0, desire_out_1), dim=1)
 
@@ -140,7 +138,6 @@ class snn_linear(nn.Module):
 class snn_input(nn.Module):
     def __init__(self, chn_in, dim_in, hyp):
         super().__init__()
-        self.learnable = False
         self.chn_in  = chn_in
         self.chn_out = chn_in
         self.dim_in  = dim_in
@@ -167,7 +164,6 @@ class snn_input(nn.Module):
 class snn_flatten(nn.Module):
     def __init__(self, chn_in, dim_in, hyp):
         super().__init__()
-        self.learnable = False
         self.chn_in   = chn_in
         self.dim_in   = dim_in
         self.neu_post = chn_in * dim_in ** 2
@@ -195,7 +191,6 @@ class snn_model(nn.Module):
         self.hyp = hyp
 
         # Layers
-        self.scale = nn.AvgPool2d(2)
         self.layers = nn.ModuleList()
         for idx, config in enumerate(hyp.config):
             if idx > 0: layer_prev = self.layers[idx-1]
@@ -212,7 +207,6 @@ class snn_model(nn.Module):
             layer.reset()
 
         # Process spikes
-        image = self.scale(image)
         for tstep in range(self.hyp.tsteps):
             for idx, layer in enumerate(self.layers):
                 if type(layer) == snn_input:     layer(image, tstep)
@@ -246,26 +240,24 @@ class snn_optim(torch.optim.Optimizer):
 
         super().__init__(model.parameters(), defaults)
 
-    def step(self, idx):
-        layer = self.model.layers[idx]
+    def step(self):
+        for idx, layer in enumerate(self.model.layers):
+            if type(layer) == snn_conv:
+                spikes_in  = self.model.layers[idx-1].spikes.sum(dim=0).type(torch.float32)
+                spikes_out = layer.spikes.sum(dim=0).type(torch.float32)
+                error = torch.sub(spikes_out.div(layer.tsteps - self.hyp.error_margin), layer.desire[..., 1].type(torch.float32))
+                cond  = layer.desire[..., 0].type(torch.float32)
+                for chn in range(layer.chn_in):
+                    update = F.conv2d(spikes_in[chn, None, None], torch.mul(error, cond).unsqueeze(1)).squeeze(0)
+                    layer.weights[:, chn, ...].sub_(update, alpha=(self.hyp.learning_rate["conv"] / layer.dim_out ** 2))
 
-        if type(layer) == snn_conv:
-            spikes_in  = self.model.layers[idx-1].spikes.sum(dim=0).type(torch.float32)
-            spikes_out = layer.spikes.sum(dim=0).type(torch.float32)
-            error = torch.sub(spikes_out.div(layer.tsteps - self.hyp.error_margin), layer.desire[..., 1].type(torch.float32))
-            cond  = layer.desire[..., 0].type(torch.float32)
-            for chn in range(layer.chn_in):
-                update = F.conv2d(spikes_in[chn, None, None], torch.mul(error, cond).unsqueeze(1)).squeeze(0)
-                limit  = layer.weights[:, chn, ...].pow(4).neg().add(1)
-                layer.weights[:, chn, ...].sub_(torch.mul(update, limit), alpha=(self.hyp.learning_rate / layer.dim_out ** 2))
+            elif type(layer) == snn_linear:
+                cond   = torch.logical_and(layer.spikes, layer.desire[:, 0].repeat(layer.tsteps + 1, 1))
+                sign   = layer.desire[:, 1].mul(2).sub(1).repeat(layer.tsteps + 1, 1)
+                update = layer.traces.repeat(layer.neu_post, 1, 1).permute(1, 0, 2)
+                update.mul_(torch.mul(cond, sign).repeat(layer.neu_pre, 1, 1).permute(1, 2, 0))
 
-        elif type(layer) == snn_linear:
-            cond   = torch.logical_and(layer.spikes, layer.desire[:, 0].repeat(layer.tsteps + 1, 1))
-            sign   = layer.desire[:, 1].mul(2).sub(1).repeat(layer.tsteps + 1, 1)
-            update = layer.traces.repeat(layer.neu_post, 1, 1).permute(1, 0, 2)
-            update.mul_(torch.mul(cond, sign).repeat(layer.neu_pre, 1, 1).permute(1, 2, 0))
-
-            layer.weights.add_(torch.sum(update, dim=0), alpha=self.hyp.learning_rate)
+                layer.weights.add_(torch.sum(update, dim=0), alpha=self.hyp.learning_rate["lin"])
 
 
 # Define result computation
@@ -300,26 +292,27 @@ if __name__ == "__main__":
     parser.add_argument("--tsteps", default=20, type=int, help="Number of time steps per image")
     parser.add_argument("--epochs", default=10, type=int, help="Number of epochs")
     parser.add_argument("--mempot_thres", default=1.0, type=float, help="Spike threshold for membrane potential")
-    parser.add_argument("--learning_rate", default=1.e-4, type=float, help="Lerning rate for weight updates")
+    parser.add_argument("--learning_rate", default=[1e-5, 1e-4], nargs=2, type=float, help="Lerning rate for kernel and weight updates")
     parser.add_argument("--decay", default=1, type=int, help="Decay for membrane potential and spike traces")
-    parser.add_argument("--desire_thres", default=[0.1, 0.0], nargs=2, type=float, help="Hidden and output threshold for desire backpropagation")
+    parser.add_argument("--desire_thres", default=[0.20, 0.05, 0.30], nargs=3, type=float, help="Convolution, linear and output threshold for desire backpropagation")
     parser.add_argument("--error_margin", default=4, type=int, help="Reduction of spikes required to reach zero error")
     parser.add_argument("--shuffle_data", default=True, type=bool, help="Shuffle training dataset before every epoch")
     parser.add_argument("--random_seed", default=0, type=int, help="Random seed for weight initialization")
+    parser.add_argument("--no-gpu", action="store_false", help="Do not use GPU")
 
     hyper_pars = parser.parse_args()
-    hyper_pars.learning_rate = hyper_pars.learning_rate / hyper_pars.tsteps
-    hyper_pars.desire_thres  = {"hid": hyper_pars.desire_thres[0], "out": hyper_pars.desire_thres[1]}
-    hyper_pars.gpu_ncpu      = torch.cuda.is_available()
+    hyper_pars.learning_rate = dict(zip(("conv", "lin"), [lr / hyper_pars.tsteps for lr in hyper_pars.learning_rate]))
+    hyper_pars.desire_thres  = dict(zip(("conv", "lin", "out"), hyper_pars.desire_thres))
+    hyper_pars.gpu_ncpu      = torch.cuda.is_available() and hyper_pars.no_gpu
     hyper_pars.device        = torch.device('cuda' if hyper_pars.gpu_ncpu else 'cpu')
 
     # Network configuration
     hyper_pars.config = (
-        ("I", 1, 14),  # Input: (input channels, input dimension)
+        ("I", 1, 28),  # Input: (input channels, input dimension)
         ("C", 10, 5),  # Convolution: (output channels, kernel size)
         ("C", 20, 5),
         ("F", ),       # Flatten
-        ("L", 100),    # Linar: (output neurons)
+        ("L", 256),    # Linar: (output neurons)
         ("L", 10))
 
     torch.set_default_tensor_type(torch.cuda.FloatTensor if hyper_pars.gpu_ncpu else torch.FloatTensor)
@@ -349,15 +342,13 @@ if __name__ == "__main__":
             label = torch.tensor(dataset_train[image_idx][1]).to(hyper_pars.device)
             if debug: print(f"Image {image_cnt}: {label}")
 
-            for layer_idx in range(len(model.layers)):
-                if not model.layers[layer_idx].learnable: continue
-                spikes_out = torch.sum(model(image), dim=0)
-                if debug: print(np.array(spikes_out.cpu()))
-
-                model.backward(label)
-                optim.step(layer_idx)
-
+            spikes_out = torch.sum(model(image), dim=0)
+            if debug: print(np.array(spikes_out.cpu()))
             resul.register(spikes_out, label)
+
+            model.backward(label)
+            optim.step()
+
         resul.print(epoch, "Training", len(dataset_train))
 
         # Inference

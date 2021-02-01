@@ -6,10 +6,10 @@ import itertools
 
 # Network configuration
 neurons   = (
-    (14, 0, 5, 1, (1, 10)),  # (dimension, padding, kernel, stride, (input channels, output channels))
-    (10, 0, 5, 1, (10, 20)),
-    720,
-    100,
+    (28, 0, 5, 1, (1, 10)),  # (dimension, padding, kernel, stride, (input channels, output channels))
+    (24, 0, 5, 1, (10, 20)),
+    8000,
+    256,
     10)
 layer_cnt = len(neurons) - 1
 tstep_cnt = 20
@@ -79,10 +79,9 @@ for epoch in range(epoch_cnt):
         for tstep in range(tstep_cnt):
             # Generate input spike train from image
             for chn_in in range(neurons[0][4][0]):
-                image_scale = signal.convolve2d(image[chn_in], np.full((2,2), 0.25, dtype=np.float32), mode="valid")[::2, ::2]
                 for neu_row in range(neurons[0][0]):
                     for neu_col in range(neurons[0][0]):
-                        mempot[0][chn_in, neu_row, neu_col] += image_scale[neu_row, neu_col]
+                        mempot[0][chn_in, neu_row, neu_col] += image[chn_in, neu_row, neu_col]
                         if mempot[0][chn_in, neu_row, neu_col] >= mempot_thres:
                             spikes[0][tstep][chn_in, neu_row, neu_col] = True
                             mempot[0][chn_in, neu_row, neu_col] -= mempot_thres
