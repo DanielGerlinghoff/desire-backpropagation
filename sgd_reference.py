@@ -5,17 +5,18 @@ from torchvision import datasets, transforms
 log_interval = 1200
 torch.manual_seed(0)
 
-neurons = [784, 512, 256, 10]
 model = torch.nn.Sequential(
+    torch.nn.Conv2d(1, 10, kernel_size=5, bias=False),
+    torch.nn.ReLU(),
+    torch.nn.Conv2d(10, 20, kernel_size=5, bias=False),
+    torch.nn.ReLU(),
     torch.nn.Flatten(),
-    torch.nn.Linear(neurons[0], neurons[1], bias=False),
+    torch.nn.Linear(8000, 256, bias=False),
     torch.nn.ReLU(),
-    torch.nn.Linear(neurons[1], neurons[2], bias=False),
-    torch.nn.ReLU(),
-    torch.nn.Linear(neurons[2], neurons[3], bias=False),
+    torch.nn.Linear(256, 10, bias=False),
     torch.nn.Softmax(dim=1)
 )
-optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
+optimizer = torch.optim.SGD(model.parameters(), lr=5e-4, momentum=0.5)
 criterion = torch.nn.CrossEntropyLoss()
 
 # Download and prepare MNIST dataset
@@ -26,9 +27,9 @@ batch_cnt  = int(image_cnt / batch_size)
 train_dataset = datasets.MNIST('data', train=True, download=True, transform=transforms.ToTensor())
 train_loader  = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True) 
 test_dataset  = datasets.MNIST('data', train=False, transform=transforms.ToTensor()) 
-test_loader   = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
+test_loader   = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=1, shuffle=False)
 
-epoch_cnt = 1
+epoch_cnt = 10
 for epoch in range(epoch_cnt):
     # Train network
     model.train()
