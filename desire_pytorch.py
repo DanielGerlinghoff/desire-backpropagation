@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import datasets, transforms
 import numpy as np
-import math
+import math, copy
 import argparse
 
 # Define layers
@@ -237,7 +237,7 @@ class snn_optim(torch.optim.Optimizer):
     def __init__(self, model, hyp):
         self.model = model
         self.hyp   = hyp
-        self.lr    = hyp.lr
+        self.lr    = copy.copy(hyp.lr)
         defaults = dict()
 
         super().__init__(model.parameters(), defaults)
