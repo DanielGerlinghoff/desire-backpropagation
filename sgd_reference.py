@@ -21,7 +21,7 @@ criterion = torch.nn.CrossEntropyLoss()
 
 # Download and prepare MNIST dataset
 image_cnt  = 60000
-batch_size = 1
+batch_size = 4
 batch_cnt  = int(image_cnt / batch_size)
 
 train_dataset = datasets.MNIST('data', train=True, download=True, transform=transforms.ToTensor())
