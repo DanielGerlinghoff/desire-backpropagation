@@ -320,15 +320,17 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", default=50, type=int, help="Number of epochs")
     parser.add_argument("--lr", default=[1e-6, 1e-5], nargs=2, type=float, help="Learning rate for kernel and weight updates")
     parser.add_argument("--lr-decay", default=4e-2, type=float, help="Exponential decay for learning rate")
-    parser.add_argument("--dropout", default=[0.1, 0.3], nargs=2, type=float, help="Dropout probability for input and hidden layers")
+    parser.add_argument("--dropout", default=[0.0, 0.3], nargs=2, type=float, help="Dropout probability for input and hidden layers")
     parser.add_argument("--mempot-thres", default=1.0, type=float, help="Spike threshold for membrane potential")
     parser.add_argument("--mempot-decay", default=2, type=int, help="Decay rate for membrane potential and spike traces")
     parser.add_argument("--desire-thres", default=[0.20, 0.05, 0.30], nargs=3, type=float, help="Convolution, linear and output threshold for desire backpropagation")
     parser.add_argument("--error-margin", default=4, type=int, help="Reduction of spikes required to reach zero error")
-    parser.add_argument("--shuffle-data", default=True, type=bool, help="Shuffle training dataset before every epoch")
     parser.add_argument("--random-seed", default=0, type=int, help="Random seed for weight initialization")
     parser.add_argument("--model-path", default="", type=str, help="Give path to load trained model")
+    parser.add_argument("--dataset", default="mnist", type=str, choices=["mnist", "fashion-mnist"], help="Dataset used for training")
+    parser.add_argument("--shuffle-data", default=True, type=bool, help="Shuffle training dataset before every epoch")
     parser.add_argument("--no-gpu", action="store_false", help="Do not use GPU")
+    parser.add_argument("--debug", action="store_true", help="Print output for debugging")
 
     hyper_pars = parser.parse_args()
     hyper_pars.lr           = dict(zip(("conv", "lin"), hyper_pars.lr))
@@ -341,8 +343,8 @@ if __name__ == "__main__":
     hyper_pars.config = (
         ("I", 1, 28),  # Input: (input channels, input dimension)
         ("F", ),       # Flatten
-        ("L", 500),    # Linear: (output neurons)
-        ("L", 256),
+        ("L", 1600),   # Linear: (output neurons)
+        ("L", 800),
         ("L", 10))
 
     torch.set_default_tensor_type(torch.cuda.FloatTensor if hyper_pars.gpu_ncpu else torch.FloatTensor)
@@ -352,16 +354,23 @@ if __name__ == "__main__":
     optim = snn_optim(model, hyper_pars)
     resul = snn_result(hyper_pars)
 
-    if hyper_pars.model_path:
-        model.load_state_dict(torch.load(hyper_pars.model_path))
+    # Load dataset
+    if hyper_pars.dataset == "mnist":
+        dataset_train = datasets.MNIST("data", train=True, download=True, transform=transforms.ToTensor())
+        dataset_test  = datasets.MNIST("data", train=False, download=True, transform=transforms.ToTensor())
+    elif hyper_pars.dataset == "fashion-mnist":
+        dataset_train = datasets.FashionMNIST("data", train=True, download=True, transform=transforms.ToTensor())
+        dataset_test  = datasets.FashionMNIST("data", train=False, download=True, transform=transforms.ToTensor())
 
-    # Iterate over MNIST images
-    dataset_train = datasets.MNIST("data", train=True, download=True, transform=transforms.ToTensor())
-    dataset_test  = datasets.MNIST("data", train=False, download=True, transform=transforms.ToTensor())
-    debug = True
-
+    # Iterate over images
     for epoch in range(hyper_pars.epochs):
-        if debug: print(f"Epoch: {epoch}")
+        if hyper_pars.debug: print(f"Epoch: {epoch}")
+
+        # Load model
+        if epoch:
+            model.load_state_dict(torch.load(os.path.splitext(os.path.basename(__file__))[0] + ".pt"))
+        elif hyper_pars.model_path:
+            model.load_state_dict(torch.load(hyper_pars.model_path))
 
         # Training
         model.train()
@@ -374,10 +383,10 @@ if __name__ == "__main__":
         for (image_cnt, image_idx) in enumerate(dataorder_train):
             image = dataset_train[image_idx][0].to(hyper_pars.device)
             label = torch.tensor(dataset_train[image_idx][1]).to(hyper_pars.device)
-            if debug: print(f"Image {image_cnt}: {label}")
+            if hyper_pars.debug: print(f"Image {image_cnt}: {label}")
 
             spikes_out = torch.sum(model(image), dim=0).type(torch.int)
-            if debug: print(np.array(spikes_out.cpu()))
+            if hyper_pars.debug: print(np.array(spikes_out.cpu()))
             resul.register(spikes_out, label)
 
             model.backward(label)
@@ -390,15 +399,15 @@ if __name__ == "__main__":
         resul.reset()
         for (image_cnt, (image, label)) in enumerate(dataset_test):
             image, label = image.to(hyper_pars.device), torch.tensor(label).to(hyper_pars.device)
-            if debug: print(f"Image {image_cnt}: {label}")
+            if hyper_pars.debug: print(f"Image {image_cnt}: {label}")
 
             spikes_out = torch.sum(model(image), dim=0).type(torch.int)
-            if debug: print(np.array(spikes_out.cpu()))
+            if hyper_pars.debug: print(np.array(spikes_out.cpu()))
             resul.register(spikes_out, label)
 
         resul.print(epoch, "Test", len(dataset_test))
 
-    # Export model
-    torch.save(model.state_dict(), os.path.splitext(os.path.basename(__file__))[0] + ".pt")
-    resul.finish()
+        # Export model
+        torch.save(model.state_dict(), os.path.splitext(os.path.basename(__file__))[0] + ".pt")
 
+    resul.finish()
