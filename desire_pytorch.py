@@ -7,8 +7,9 @@ import numpy as np
 import math, copy
 import argparse
 
+
 # Define layers
-class snn_conv(nn.Module):
+class SnnConv(nn.Module):
     def __init__(self, chn_in, chn_out, dim_k, dim_in, hyp):
         super().__init__()
         self.chn_in  = chn_in
@@ -74,7 +75,8 @@ class snn_conv(nn.Module):
         self.traces = torch.zeros((self.tsteps + 1, self.chn_in, self.dim_in, self.dim_in), dtype=torch.float32)
         self.desire = torch.zeros((self.chn_out, self.dim_out, self.dim_out, 2), dtype=torch.bool)
 
-class snn_linear(nn.Module):
+
+class SnnLinear(nn.Module):
     def __init__(self, neu_in, neu_out, dropout, hyp):
         super().__init__()
         self.neu_pre  = neu_in
@@ -147,7 +149,8 @@ class snn_linear(nn.Module):
         else:
             self.dropout_mask = torch.ones(self.neu_post, dtype=torch.bool)
 
-class snn_input(nn.Module):
+
+class SnnInput(nn.Module):
     def __init__(self, chn_in, dim_in, hyp):
         super().__init__()
         self.chn_in  = chn_in
@@ -182,7 +185,8 @@ class snn_input(nn.Module):
 
         self.dropout_mask = self.dropout_dist.sample((self.chn_in, self.dim_in, self.dim_in)).type(torch.bool)
 
-class snn_flatten(nn.Module):
+
+class SnnFlatten(nn.Module):
     def __init__(self, chn_in, dim_in, hyp):
         super().__init__()
         self.chn_in   = chn_in
@@ -205,8 +209,9 @@ class snn_flatten(nn.Module):
         self.spikes = torch.zeros((self.tsteps + 1, self.neu_post), dtype=torch.float32)
         self.desire = torch.zeros((self.neu_post, 2), dtype=torch.bool)
 
+
 # Define network
-class snn_model(nn.Module):
+class SnnModel(nn.Module):
     def __init__(self, hyp):
         super().__init__()
         self.hyp = hyp
@@ -217,10 +222,10 @@ class snn_model(nn.Module):
             if idx > 0: layer_prev = self.layers[idx-1]
             layer_last = True if idx == len(hyp.config) - 1 else False
 
-            if config[0] == "I":   layer = snn_input(config[1], config[2], hyp)
-            elif config[0] == "C": layer = snn_conv(layer_prev.chn_out, config[1], config[2], layer_prev.dim_out, hyp)
-            elif config[0] == "F": layer = snn_flatten(layer_prev.chn_out, layer_prev.dim_out, hyp)
-            elif config[0] == "L": layer = snn_linear(layer_prev.neu_post, config[1], not layer_last, hyp)
+            if config[0] == "I":   layer = SnnInput(config[1], config[2], hyp)
+            elif config[0] == "C": layer = SnnConv(layer_prev.chn_out, config[1], config[2], layer_prev.dim_out, hyp)
+            elif config[0] == "F": layer = SnnFlatten(layer_prev.chn_out, layer_prev.dim_out, hyp)
+            elif config[0] == "L": layer = SnnLinear(layer_prev.neu_post, config[1], not layer_last, hyp)
             self.layers.append(layer)
 
     def forward(self, image):
@@ -231,10 +236,10 @@ class snn_model(nn.Module):
         # Process spikes
         for tstep in range(self.hyp.tsteps):
             for idx, layer in enumerate(self.layers):
-                if type(layer) == snn_input:     layer(image, tstep)
-                elif type(layer) == snn_conv:    layer(self.layers[idx-1].spikes[tstep], tstep, traces=self.training) 
-                elif type(layer) == snn_flatten: layer(self.layers[idx-1].spikes[tstep], tstep)
-                elif type(layer) == snn_linear:  layer(self.layers[idx-1].spikes[tstep], tstep)
+                if type(layer) == SnnInput:     layer(image, tstep)
+                elif type(layer) == SnnConv:    layer(self.layers[idx-1].spikes[tstep], tstep, traces=self.training) 
+                elif type(layer) == SnnFlatten: layer(self.layers[idx-1].spikes[tstep], tstep)
+                elif type(layer) == SnnLinear:  layer(self.layers[idx-1].spikes[tstep], tstep)
 
         return self.layers[-1].spikes
 
@@ -253,8 +258,9 @@ class snn_model(nn.Module):
             layer = self.layers[idx]
             self.layers[idx-1].desire = layer.backward(layer.desire)
 
+
 # Define optimizer
-class snn_optim(torch.optim.Optimizer):
+class SnnOptim(torch.optim.Optimizer):
     def __init__(self, model, hyp):
         self.model = model
         self.hyp   = hyp
@@ -265,7 +271,7 @@ class snn_optim(torch.optim.Optimizer):
 
     def step(self):
         for idx, layer in enumerate(self.model.layers):
-            if type(layer) == snn_conv:
+            if type(layer) == SnnConv:
                 spikes_in  = self.model.layers[idx-1].spikes.sum(dim=0).type(torch.float32)
                 spikes_out = layer.spikes.sum(dim=0).type(torch.float32)
                 error = torch.sub(spikes_out.div(layer.tsteps - self.hyp.error_margin), layer.desire[..., 1].type(torch.float32))
@@ -274,7 +280,7 @@ class snn_optim(torch.optim.Optimizer):
                     update = F.conv2d(spikes_in[chn, None, None], torch.mul(error, cond).unsqueeze(1)).squeeze(0)
                     layer.weights[:, chn, ...].sub_(update, alpha=(self.lr["conv"] / layer.dim_out ** 2))
 
-            elif type(layer) == snn_linear:
+            elif type(layer) == SnnLinear:
                 cond   = layer.spikes.logical_and(torch.logical_and(layer.desire[:, 0], layer.dropout_mask).repeat(layer.tsteps + 1, 1))
                 sign   = layer.desire[:, 1].mul(2).sub(1).repeat(layer.tsteps + 1, 1)
                 update = layer.traces.repeat(layer.neu_post, 1, 1).permute(1, 0, 2)
@@ -287,8 +293,9 @@ class snn_optim(torch.optim.Optimizer):
         self.lr["conv"] = self.hyp.lr["conv"] * math.exp(-self.hyp.lr_decay * epoch)
         self.lr["lin"]  = self.hyp.lr["lin"] * math.exp(-self.hyp.lr_decay * epoch)
 
+
 # Define result computation
-class snn_result:
+class SnnResult:
     def __init__(self, hyp):
         self.neu_out = hyp.config[-1][1]
         self.results = None
@@ -340,19 +347,30 @@ if __name__ == "__main__":
     hyper_pars.device       = torch.device('cuda' if hyper_pars.gpu_ncpu else 'cpu')
 
     # Network configuration
-    hyper_pars.config = (
-        ("I", 1, 28),  # Input: (input channels, input dimension)
-        ("F", ),       # Flatten
-        ("L", 1600),   # Linear: (output neurons)
-        ("L", 800),
-        ("L", 10))
+    # Input layer:   ("I", input channels, input dimensions)
+    # Flatten layer: ("F", )
+    # Linear layer:  ("L", output neurons)
+    if hyper_pars.dataset == "mnist":
+        hyper_pars.config = (
+            ("I", 1, 28),
+            ("F", ),
+            ("L", 1600),
+            ("L", 800),
+            ("L", 10))
+    elif hyper_pars.dataset == "fashion-mnist":
+        hyper_pars.config = (
+            ("I", 1, 28),
+            ("F", ),
+            ("L", 1000),
+            ("L", 100),
+            ("L", 10))
 
     torch.set_default_tensor_type(torch.cuda.FloatTensor if hyper_pars.gpu_ncpu else torch.FloatTensor)
     torch.manual_seed(hyper_pars.random_seed)
 
-    model = snn_model(hyper_pars)
-    optim = snn_optim(model, hyper_pars)
-    resul = snn_result(hyper_pars)
+    model = SnnModel(hyper_pars)
+    optim = SnnOptim(model, hyper_pars)
+    resul = SnnResult(hyper_pars)
 
     # Load dataset
     if hyper_pars.dataset == "mnist":
