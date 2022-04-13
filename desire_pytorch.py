@@ -6,6 +6,7 @@ from torchvision import datasets, transforms
 import numpy as np
 import math, copy
 import argparse
+import csv
 
 
 # Define layers
@@ -332,6 +333,16 @@ class SnnResult:
 
 
 if __name__ == "__main__":
+    # Files for plotting
+    file_error  = open("plots/error.csv", "w", buffering=1)
+    csv_error   = csv.writer(file_error)
+    file_desire = open("plots/desire.csv", "w", buffering=1)
+    csv_desire  = csv.writer(file_desire)
+    file_spikes = open("plots/spikes.csv", "w", buffering=1)
+    csv_spikes  = csv.writer(file_spikes)
+    file_weight = open("plots/weight.csv", "w", buffering=1)
+    csv_weight  = csv.writer(file_weight)
+
     # Parse hyper-parameters
     parser = argparse.ArgumentParser(description="Hyper-parameters for desire backpropagation")
     parser.add_argument("--tsteps", default=20, type=int, help="Number of time steps per image")
@@ -435,6 +446,29 @@ if __name__ == "__main__":
             if hyper_pars.debug: print(np.array(spikes_out.cpu()))
             resul.register(spikes_out, label)
 
+            model.backward(label)
+            for mod in model.modules():
+                if type(mod) is SnnFlatten:
+                    spikes = mod.spikes.sum(dim=0).to(torch.int)
+                    csv_spikes.writerow(spikes.tolist())
+
+                if type(mod) is SnnLinear:
+                    spikes = mod.spikes.sum(dim=0).to(torch.int)
+                    csv_spikes.writerow(spikes.tolist())
+
+                    error = spikes - mod.desire[:, 1].to(torch.int)
+                    error = error[mod.desire[:, 0] == 1].div(hyper_pars.tsteps)
+                    csv_error.writerow(error.tolist())
+
+                    desire = mod.desire[:, 1].mul(2).sub(1) * mod.desire[:, 0]
+                    csv_desire.writerow(desire.tolist())
+
+        for mod in model.modules():
+            if type(mod) is SnnLinear:
+                for i in range(mod.weights.size(1)):
+                    weight = mod.weights[:, i]
+                    csv_weight.writerow(weight.tolist())
+
         resul.print(epoch, "Test", len(dataset_test))
 
         # Export model
@@ -444,3 +478,7 @@ if __name__ == "__main__":
             torch.save(state, os.path.splitext(os.path.basename(__file__))[0] + f"_{epoch:03d}.pt")
 
     resul.finish()
+    file_error.close()
+    file_desire.close()
+    file_spikes.close()
+    file_weight.close()
