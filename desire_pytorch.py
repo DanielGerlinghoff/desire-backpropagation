@@ -301,6 +301,9 @@ class SnnResult:
         self.results = None
         self.logfile = open(os.path.splitext(os.path.basename(__file__))[0] + ".log", "w", buffering=1)
 
+        self.acc_best = 0
+        self.new_best = False
+
     def register(self, spikes, label):
         spikes_max = torch.max(spikes)
         spikes_cnt = torch.bincount(spikes)
@@ -311,7 +314,15 @@ class SnnResult:
 
     def print(self, epoch, desc, length):
         accuracy = self.results[0] / self.results.sum() * 100
-        print("Epoch {:2d} {:s}: {:.2f}%".format(epoch, desc, accuracy), file=self.logfile)
+        print("Epoch {:3d} {:s}: {:.2f}%".format(epoch, desc, accuracy), file=self.logfile)
+
+        if desc == "Test":
+            if accuracy > self.acc_best:
+                self.acc_best = accuracy
+                self.new_best = True
+                print(" " * 6 + f"New best: {accuracy:.2f}%", file=self.logfile)
+            else:
+                self.new_best = False
 
     def reset(self):
         self.results = torch.zeros(2, dtype=torch.int)
@@ -332,7 +343,7 @@ if __name__ == "__main__":
     parser.add_argument("--mempot-decay", default=2, type=int, help="Decay rate for membrane potential and spike traces")
     parser.add_argument("--desire-thres", default=[0.20, 0.05, 0.30], nargs=3, type=float, help="Convolution, linear and output threshold for desire backpropagation")
     parser.add_argument("--error-margin", default=4, type=int, help="Reduction of spikes required to reach zero error")
-    parser.add_argument("--random-seed", default=0, type=int, help="Random seed for weight initialization")
+    parser.add_argument("--random-seed", default=None, type=int, help="Random seed for weight initialization")
     parser.add_argument("--model-path", default="", type=str, help="Give path to load trained model")
     parser.add_argument("--dataset", default="mnist", type=str, choices=["mnist", "fashion-mnist"], help="Dataset used for training")
     parser.add_argument("--shuffle-data", default=True, type=bool, help="Shuffle training dataset before every epoch")
@@ -366,7 +377,8 @@ if __name__ == "__main__":
             ("L", 10))
 
     torch.set_default_tensor_type(torch.cuda.FloatTensor if hyper_pars.gpu_ncpu else torch.FloatTensor)
-    torch.manual_seed(hyper_pars.random_seed)
+    if hyper_pars.random_seed is not None:
+        torch.manual_seed(hyper_pars.random_seed)
 
     model = SnnModel(hyper_pars)
     optim = SnnOptim(model, hyper_pars)
@@ -427,5 +439,8 @@ if __name__ == "__main__":
 
         # Export model
         torch.save(model.state_dict(), os.path.splitext(os.path.basename(__file__))[0] + ".pt")
+        if resul.new_best:
+            state = {"state": model.state_dict(), "pars": hyper_pars}
+            torch.save(state, os.path.splitext(os.path.basename(__file__))[0] + f"_{epoch:03d}.pt")
 
     resul.finish()
