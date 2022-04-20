@@ -334,14 +334,8 @@ class SnnResult:
 
 if __name__ == "__main__":
     # Files for plotting
-    file_error  = open("plots/error.csv", "w", buffering=1)
-    csv_error   = csv.writer(file_error)
-    file_desire = open("plots/desire.csv", "w", buffering=1)
-    csv_desire  = csv.writer(file_desire)
     file_spikes = open("plots/spikes.csv", "w", buffering=1)
     csv_spikes  = csv.writer(file_spikes)
-    file_weight = open("plots/weight.csv", "w", buffering=1)
-    csv_weight  = csv.writer(file_weight)
 
     # Parse hyper-parameters
     parser = argparse.ArgumentParser(description="Hyper-parameters for desire backpropagation")
@@ -357,7 +351,7 @@ if __name__ == "__main__":
     parser.add_argument("--random-seed", default=None, type=int, help="Random seed for weight initialization")
     parser.add_argument("--model-path", default="", type=str, help="Give path to load trained model")
     parser.add_argument("--dataset", default="mnist", type=str, choices=["mnist", "fashion-mnist"], help="Dataset used for training")
-    parser.add_argument("--shuffle-data", default=True, type=bool, help="Shuffle training dataset before every epoch")
+    parser.add_argument("--no-shuffle-data", action="store_false", help="Shuffle training dataset before every epoch")
     parser.add_argument("--no-gpu", action="store_false", help="Do not use GPU")
     parser.add_argument("--debug", action="store_true", help="Print output for debugging")
 
@@ -367,6 +361,7 @@ if __name__ == "__main__":
     hyper_pars.dropout      = dict(zip(("in", "hid"), hyper_pars.dropout))
     hyper_pars.gpu_ncpu     = torch.cuda.is_available() and hyper_pars.no_gpu
     hyper_pars.device       = torch.device('cuda' if hyper_pars.gpu_ncpu else 'cpu')
+    hyper_pars.shuffle_data = hyper_pars.no_shuffle_data
 
     # Network configuration
     # Input layer:   ("I", input channels, input dimensions)
@@ -430,6 +425,12 @@ if __name__ == "__main__":
             if hyper_pars.debug: print(np.array(spikes_out.cpu()))
             resul.register(spikes_out, label)
 
+            print(f"Training Sample: {image_cnt}, Label: {label.item()}")
+            for mod in model.modules():
+                if type(mod) is SnnLinear:
+                    spikes = mod.spikes.sum(dim=0).to(torch.int)
+                    csv_spikes.writerow(spikes.tolist())
+
             model.backward(label)
             optim.step()
 
@@ -439,35 +440,13 @@ if __name__ == "__main__":
         model.eval()
         resul.reset()
         for (image_cnt, (image, label)) in enumerate(dataset_test):
+            break
             image, label = image.to(hyper_pars.device), torch.tensor(label).to(hyper_pars.device)
             if hyper_pars.debug: print(f"Image {image_cnt}: {label}")
 
             spikes_out = torch.sum(model(image), dim=0).type(torch.int)
             if hyper_pars.debug: print(np.array(spikes_out.cpu()))
             resul.register(spikes_out, label)
-
-            model.backward(label)
-            for mod in model.modules():
-                if type(mod) is SnnFlatten:
-                    spikes = mod.spikes.sum(dim=0).to(torch.int)
-                    csv_spikes.writerow(spikes.tolist())
-
-                if type(mod) is SnnLinear:
-                    spikes = mod.spikes.sum(dim=0).to(torch.int)
-                    csv_spikes.writerow(spikes.tolist())
-
-                    error = spikes - mod.desire[:, 1].to(torch.int)
-                    error = error[mod.desire[:, 0] == 1].div(hyper_pars.tsteps)
-                    csv_error.writerow(error.tolist())
-
-                    desire = mod.desire[:, 1].mul(2).sub(1) * mod.desire[:, 0]
-                    csv_desire.writerow(desire.tolist())
-
-        for mod in model.modules():
-            if type(mod) is SnnLinear:
-                for i in range(mod.weights.size(1)):
-                    weight = mod.weights[:, i]
-                    csv_weight.writerow(weight.tolist())
 
         resul.print(epoch, "Test", len(dataset_test))
 
@@ -478,7 +457,4 @@ if __name__ == "__main__":
             torch.save(state, os.path.splitext(os.path.basename(__file__))[0] + f"_{epoch:03d}.pt")
 
     resul.finish()
-    file_error.close()
-    file_desire.close()
     file_spikes.close()
-    file_weight.close()
