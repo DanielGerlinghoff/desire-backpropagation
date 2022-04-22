@@ -346,7 +346,7 @@ if __name__ == "__main__":
     parser.add_argument("--random-seed", default=None, type=int, help="Random seed for weight initialization")
     parser.add_argument("--model-path", default="", type=str, help="Give path to load trained model")
     parser.add_argument("--dataset", default="mnist", type=str, choices=["mnist", "fashion-mnist"], help="Dataset used for training")
-    parser.add_argument("--shuffle-data", default=True, type=bool, help="Shuffle training dataset before every epoch")
+    parser.add_argument("--no-shuffle-data", action="store_false", help="Shuffle training dataset before every epoch")
     parser.add_argument("--no-gpu", action="store_false", help="Do not use GPU")
     parser.add_argument("--debug", action="store_true", help="Print output for debugging")
 
@@ -356,6 +356,7 @@ if __name__ == "__main__":
     hyper_pars.dropout      = dict(zip(("in", "hid"), hyper_pars.dropout))
     hyper_pars.gpu_ncpu     = torch.cuda.is_available() and hyper_pars.no_gpu
     hyper_pars.device       = torch.device('cuda' if hyper_pars.gpu_ncpu else 'cpu')
+    hyper_pars.shuffle_data = hyper_pars.no_shuffle_data
 
     # Network configuration
     # Input layer:   ("I", input channels, input dimensions)
