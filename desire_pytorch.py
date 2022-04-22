@@ -6,7 +6,6 @@ from torchvision import datasets, transforms
 import numpy as np
 import math, copy
 import argparse
-import csv
 
 
 # Define layers
@@ -333,10 +332,6 @@ class SnnResult:
 
 
 if __name__ == "__main__":
-    # Files for plotting
-    file_spikes = open("plots/spikes.csv", "w", buffering=1)
-    csv_spikes  = csv.writer(file_spikes)
-
     # Parse hyper-parameters
     parser = argparse.ArgumentParser(description="Hyper-parameters for desire backpropagation")
     parser.add_argument("--tsteps", default=20, type=int, help="Number of time steps per image")
@@ -425,11 +420,11 @@ if __name__ == "__main__":
             if hyper_pars.debug: print(np.array(spikes_out.cpu()))
             resul.register(spikes_out, label)
 
-            print(f"Training Sample: {image_cnt}, Label: {label.item()}")
-            for mod in model.modules():
-                if type(mod) is SnnLinear:
-                    spikes = mod.spikes.sum(dim=0).to(torch.int)
-                    csv_spikes.writerow(spikes.tolist())
+            if image_cnt == 4000: break
+            intv = 5
+            if image_cnt % intv == 0:
+                state = {"state": model.state_dict(), "pars": hyper_pars}
+                torch.save(state, "plots/" + os.path.splitext(os.path.basename(__file__))[0] + f"_{image_cnt//intv:05d}.pt")
 
             model.backward(label)
             optim.step()
@@ -457,4 +452,3 @@ if __name__ == "__main__":
             torch.save(state, os.path.splitext(os.path.basename(__file__))[0] + f"_{epoch:03d}.pt")
 
     resul.finish()
-    file_spikes.close()

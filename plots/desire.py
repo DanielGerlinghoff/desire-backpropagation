@@ -1,69 +1,70 @@
 import numpy as np
 import csv
 import matplotlib.pyplot as plt
+import torch
+from torchvision import datasets, transforms
+
+from desire_pytorch import SnnModel, SnnLinear, SnnFlatten
 
 
-# Read CSV files
-file_desire = open("desire.csv", "r")
-csv_desire  = csv.reader(file_desire)
-file_spikes = open("spikes.csv", "r")
-csv_spikes  = csv.reader(file_spikes)
-file_weight = open("weight.csv", "r")
-csv_weight  = csv.reader(file_weight)
+# Dataset
+dataset = datasets.MNIST("../data", train=False, transform=transforms.ToTensor())
 
 # Constants
 neurons = [784, 1600, 800, 10]
 layers  = 3
-samples = 10000
-labels  = 10
-epochs  = 40
+samples = 400
 
 # Average loss for layers and epochs
-layer   = 0
-sample  = 0
-epoch   = 0
-contrib = np.zeros((epochs, layers, max(neurons)))
+contrib = np.zeros((layers, samples, max(neurons)))
 
-while epoch < epochs:
-    # Load weights for epoch
-    weight = [None] * layers
-    for lay in range(layers):
-        weight[lay] = np.empty(neurons[lay:lay+2])
-        for neu in range(neurons[lay]):
-            weight[lay][neu] = np.array(next(csv_weight)).astype(np.float)
+for sample in range(samples):
+    print(f"Sample: {sample+1}")
 
-    # Iterate over samples
-    while sample < samples:
-        while layer < layers:
-            spikes = np.array(next(csv_spikes)).astype(np.int)
-            desire = np.array(next(csv_desire)).astype(np.int)
+    # Load model
+    state_dict, hyper_pars = torch.load(f"desire_pytorch_{sample:05d}.pt").values()
 
-            contribution = np.multiply(weight[layer], desire).transpose()
-            #contribution = np.multiply(contribution, spikes)
-            contribution = contribution.sum(axis=0)
-            contrib[epoch, layer, :neurons[layer]] += contribution
+    model = SnnModel(hyper_pars)
+    model.load_state_dict(state_dict)
+    model.eval()
 
-            layer += 1
-
-        # Discard last layer's spikes
-        spikes = next(csv_spikes)
+    # Iterate through test dataset
+    for (image_cnt, (image, label)) in enumerate(dataset):
+        if image_cnt == 800: break
+        output = torch.sum(model(image), dim=0).type(torch.int)
+        model.backward(torch.tensor(label))
 
         layer = 0
-        sample += 1
+        for mod in model.modules():
+            if type(mod) is SnnFlatten:
+                spikes_in = mod.spikes.sum(dim=0).numpy()
 
-    sample = 0
-    epoch += 1
-    print(f"Epoch: {epoch}")
+            if type(mod) is SnnLinear:
+                spikes_out = mod.spikes.sum(dim=0).numpy()
+                desire     = mod.desire[:, 1].mul(2).sub(1) * mod.desire[:, 0]
+                desire     = desire.numpy()
+
+                contribution = np.multiply(mod.weights.numpy().transpose(), desire * spikes_out).transpose()
+                contribution = np.multiply(contribution, spikes_in)
+                contribution = contribution.sum(axis=0)
+                contrib[layer, sample, :neurons[layer]] += contribution
+
+                spikes_in = spikes_out
+                layer += 1
 
 # Plot spike activity
+output = np.empty((layers, max(neurons), samples))
+
 fig, axs = plt.subplots(layers, 1, sharex=True)
-c_max = np.log2(max(abs(contrib.min()), abs(contrib.max())))
 for lay in range(layers):
-    c = contrib[:, lay, :neurons[lay]].transpose()
+    c = contrib[lay, :, :neurons[lay]].transpose()
+    c_max = np.log(max(abs(c.min()), abs(c.max())))
     axs[lay].imshow(np.log(np.abs(c) + 1) * np.sign(c),
                     cmap="PRGn", interpolation="none",
                     vmin=-c_max, vmax=c_max,
-                    aspect=epochs/4/neurons[lay])
+                    aspect=0.2*samples/neurons[lay])
+    output[lay, :neurons[lay]] = c
 
 plt.tight_layout()
-plt.savefig("fig.png", dpi=200)
+plt.savefig("output.png", dpi=200)
+torch.save(output, "output.pt")
