@@ -6,6 +6,7 @@ from torchvision import datasets, transforms
 import numpy as np
 import math, copy
 import argparse
+import time
 
 
 # Define layers
@@ -335,7 +336,7 @@ if __name__ == "__main__":
     # Parse hyper-parameters
     parser = argparse.ArgumentParser(description="Hyper-parameters for desire backpropagation")
     parser.add_argument("--tsteps", default=20, type=int, help="Number of time steps per image")
-    parser.add_argument("--epochs", default=50, type=int, help="Number of epochs")
+    parser.add_argument("--epochs", default=1, type=int, help="Number of epochs")
     parser.add_argument("--lr", default=[1e-6, 1e-5], nargs=2, type=float, help="Learning rate for kernel and weight updates")
     parser.add_argument("--lr-decay", default=4e-2, type=float, help="Exponential decay for learning rate")
     parser.add_argument("--dropout", default=[0.0, 0.3], nargs=2, type=float, help="Dropout probability for input and hidden layers")
@@ -358,33 +359,6 @@ if __name__ == "__main__":
     hyper_pars.device       = torch.device('cuda' if hyper_pars.gpu_ncpu else 'cpu')
     hyper_pars.shuffle_data = hyper_pars.no_shuffle_data
 
-    # Network configuration
-    # Input layer:   ("I", input channels, input dimensions)
-    # Flatten layer: ("F", )
-    # Linear layer:  ("L", output neurons)
-    if hyper_pars.dataset == "mnist":
-        hyper_pars.config = (
-            ("I", 1, 28),
-            ("F", ),
-            ("L", 1600),
-            ("L", 800),
-            ("L", 10))
-    elif hyper_pars.dataset == "fashion-mnist":
-        hyper_pars.config = (
-            ("I", 1, 28),
-            ("F", ),
-            ("L", 1000),
-            ("L", 100),
-            ("L", 10))
-
-    torch.set_default_tensor_type(torch.cuda.FloatTensor if hyper_pars.gpu_ncpu else torch.FloatTensor)
-    if hyper_pars.random_seed is not None:
-        torch.manual_seed(hyper_pars.random_seed)
-
-    model = SnnModel(hyper_pars)
-    optim = SnnOptim(model, hyper_pars)
-    resul = SnnResult(hyper_pars)
-
     # Load dataset
     if hyper_pars.dataset == "mnist":
         dataset_train = datasets.MNIST("data", train=True, download=True, transform=transforms.ToTensor())
@@ -393,41 +367,80 @@ if __name__ == "__main__":
         dataset_train = datasets.FashionMNIST("data", train=True, download=True, transform=transforms.ToTensor())
         dataset_test  = datasets.FashionMNIST("data", train=False, download=True, transform=transforms.ToTensor())
 
-    # Iterate over images
-    for epoch in range(hyper_pars.epochs):
-        if hyper_pars.debug: print(f"Epoch: {epoch}")
+    # Network configuration
+    # Input layer:   ("I", input channels, input dimensions)
+    # Flatten layer: ("F", )
+    # Linear layer:  ("L", output neurons)
+    for n in [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 40000, 50000, 60000, 70000, 80000, 90000, 100000]:
+        if hyper_pars.dataset == "mnist":
+            hyper_pars.config = (
+                ("I", 1, 28),
+                ("F", ),
+                ("L", n),
+                ("L", 10))
+        elif hyper_pars.dataset == "fashion-mnist":
+            hyper_pars.config = (
+                ("I", 1, 28),
+                ("F", ),
+                ("L", 1000),
+                ("L", 100),
+                ("L", 10))
 
-        # Load model
-        if epoch:
-            model.load_state_dict(torch.load(os.path.splitext(os.path.basename(__file__))[0] + ".pt"))
-        elif hyper_pars.model_path:
-            model.load_state_dict(torch.load(hyper_pars.model_path))
+        torch.set_default_tensor_type(torch.cuda.FloatTensor if hyper_pars.gpu_ncpu else torch.FloatTensor)
+        if hyper_pars.random_seed is not None:
+            torch.manual_seed(hyper_pars.random_seed)
 
-        # Training
-        model.train()
-        resul.reset()
-        optim.scheduler(epoch)
+        model = SnnModel(hyper_pars)
+        optim = SnnOptim(model, hyper_pars)
+        resul = SnnResult(hyper_pars)
 
-        if hyper_pars.shuffle_data: dataorder_train = torch.randperm(len(dataset_train))
-        else: dataorder_train = torch.arange(0, len(dataset_train), dtype=torch.int)
+        # Iterate over images
+        for epoch in range(hyper_pars.epochs):
+            if hyper_pars.debug: print(f"Epoch: {epoch}")
 
-        for (image_cnt, image_idx) in enumerate(dataorder_train):
-            image = dataset_train[image_idx][0].to(hyper_pars.device)
-            label = torch.tensor(dataset_train[image_idx][1]).to(hyper_pars.device)
-            if hyper_pars.debug: print(f"Image {image_cnt}: {label}")
+            # Load model
+            if epoch:
+                model.load_state_dict(torch.load(os.path.splitext(os.path.basename(__file__))[0] + ".pt"))
+            elif hyper_pars.model_path:
+                model.load_state_dict(torch.load(hyper_pars.model_path))
 
-            spikes_out = torch.sum(model(image), dim=0).type(torch.int)
-            if hyper_pars.debug: print(np.array(spikes_out.cpu()))
-            resul.register(spikes_out, label)
+            # Training
+            model.train()
+            resul.reset()
+            optim.scheduler(epoch)
 
-            if image_cnt == 4000: break
-            intv = 5
-            if image_cnt % intv == 0:
-                state = {"state": model.state_dict(), "pars": hyper_pars}
-                torch.save(state, "plots/" + os.path.splitext(os.path.basename(__file__))[0] + f"_{image_cnt//intv:05d}.pt")
+            if hyper_pars.shuffle_data: dataorder_train = torch.randperm(len(dataset_train))
+            else: dataorder_train = torch.arange(0, len(dataset_train), dtype=torch.int)
 
-            model.backward(label)
-            optim.step()
+            time_fw = list()
+            time_bw = list()
+            time_step = list()
+            for (image_cnt, image_idx) in enumerate(dataorder_train):
+                if image_cnt == 2000: break
+                image = dataset_train[image_idx][0].to(hyper_pars.device)
+                label = torch.tensor(dataset_train[image_idx][1]).to(hyper_pars.device)
+                if hyper_pars.debug: print(f"Image {image_cnt}: {label}")
+
+                start_fw = time.time()
+                spikes_out = torch.sum(model(image), dim=0).type(torch.int)
+                time_fw.append(time.time() - start_fw)
+
+                if hyper_pars.debug: print(np.array(spikes_out.cpu()))
+                resul.register(spikes_out, label)
+
+                start_bw = time.time()
+                model.backward(label)
+                time_bw.append(time.time() - start_bw)
+
+                start_step = time.time()
+                optim.step()
+                time_step.append(time.time() - start_step)
+
+            print(f"{n},", end="")
+            for t in [time_fw, time_bw, time_step]:
+                print(f"{min(t)},{sum(t)/len(t)},{max(t)},", end="")
+            print("")
+        continue
 
         resul.print(epoch, "Training", len(dataset_train))
 
@@ -435,7 +448,6 @@ if __name__ == "__main__":
         model.eval()
         resul.reset()
         for (image_cnt, (image, label)) in enumerate(dataset_test):
-            break
             image, label = image.to(hyper_pars.device), torch.tensor(label).to(hyper_pars.device)
             if hyper_pars.debug: print(f"Image {image_cnt}: {label}")
 
