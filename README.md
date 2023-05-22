@@ -27,3 +27,11 @@ For Fashion MNIST dataset:
 ```
 python3 desire_pytorch.py --dataset fashion-mnist --epochs 600 --dropout 0.05 0.40
 ```
+
+Results will be written to `desire_pytorch.log`.
+
+### Run the pre-trained models
+```
+python3 desire_pytorch.py --dataset mnist --model-path models/mnist.pt --eval
+python3 desire_pytorch.py --dataset fashion-mnist --model-path models/fashion_mnist.pt --eval
+```

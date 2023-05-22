@@ -348,6 +348,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", default="mnist", type=str, choices=["mnist", "fashion-mnist"], help="Dataset used for training")
     parser.add_argument("--no-shuffle-data", action="store_false", help="Shuffle training dataset before every epoch")
     parser.add_argument("--no-gpu", action="store_false", help="Do not use GPU")
+    parser.add_argument("--eval", action="store_true", help="Run one epoch on validation dataset")
     parser.add_argument("--debug", action="store_true", help="Print output for debugging")
 
     hyper_pars = parser.parse_args()
@@ -404,26 +405,27 @@ if __name__ == "__main__":
             model.load_state_dict(torch.load(hyper_pars.model_path))
 
         # Training
-        model.train()
-        resul.reset()
-        optim.scheduler(epoch)
+        if not hyper_pars.eval:
+            model.train()
+            resul.reset()
+            optim.scheduler(epoch)
 
-        if hyper_pars.shuffle_data: dataorder_train = torch.randperm(len(dataset_train))
-        else: dataorder_train = torch.arange(0, len(dataset_train), dtype=torch.int)
+            if hyper_pars.shuffle_data: dataorder_train = torch.randperm(len(dataset_train))
+            else: dataorder_train = torch.arange(0, len(dataset_train), dtype=torch.int)
 
-        for (image_cnt, image_idx) in enumerate(dataorder_train):
-            image = dataset_train[image_idx][0].to(hyper_pars.device)
-            label = torch.tensor(dataset_train[image_idx][1]).to(hyper_pars.device)
-            if hyper_pars.debug: print(f"Image {image_cnt}: {label}")
+            for (image_cnt, image_idx) in enumerate(dataorder_train):
+                image = dataset_train[image_idx][0].to(hyper_pars.device)
+                label = torch.tensor(dataset_train[image_idx][1]).to(hyper_pars.device)
+                if hyper_pars.debug: print(f"Image {image_cnt}: {label}")
 
-            spikes_out = torch.sum(model(image), dim=0).type(torch.int)
-            if hyper_pars.debug: print(np.array(spikes_out.cpu()))
-            resul.register(spikes_out, label)
+                spikes_out = torch.sum(model(image), dim=0).type(torch.int)
+                if hyper_pars.debug: print(np.array(spikes_out.cpu()))
+                resul.register(spikes_out, label)
 
-            model.backward(label)
-            optim.step()
+                model.backward(label)
+                optim.step()
 
-        resul.print(epoch, "Training", len(dataset_train))
+            resul.print(epoch, "Training", len(dataset_train))
 
         # Inference
         model.eval()
@@ -437,6 +439,8 @@ if __name__ == "__main__":
             resul.register(spikes_out, label)
 
         resul.print(epoch, "Test", len(dataset_test))
+
+        if hyper_pars.eval: break
 
         # Export model
         torch.save(model.state_dict(), os.path.splitext(os.path.basename(__file__))[0] + ".pt")
