@@ -3,7 +3,7 @@ Training of multi-layer spiking neural networks using a combination of spike-tim
 
 
 ## Usage
-The only relevant file is desire\_pytorch.py, which includes the implementation of the learning algorithm in PyTorch. desire\_backprop.py is an early, slow version of the algorithm and sgd\_reference.py serves as reference with ANN training performance.
+The only relevant file is `desire_pytorch.py`, which includes the implementation of the learning algorithm in PyTorch. `desire_backprop.py` is an early, slow version of the algorithm and `sgd_reference.py` serves as reference with ANN training performance.
 
 In addition to the usual training parameters, the follwing are added for desire backpropagation:
 
@@ -35,3 +35,8 @@ Results will be written to `desire_pytorch.log`.
 python3 desire_pytorch.py --dataset mnist --model-path models/mnist.pt --eval
 python3 desire_pytorch.py --dataset fashion-mnist --model-path models/fashion_mnist.pt --eval
 ```
+
+## Citation
+*D. Gerlinghoff, T. Luo, R. S. M. Goh and W. F. Wong, "Desire Backpropagation: A Lightweight Training Algorithm for Multi-Layer Spiking Neural Networks based on Spike-Timing-Dependent Plasticity," in Neurocomputing, doi: 10.1016/j.neucom.2023.126773.*
+
+ [Access on *ScienceDirect*](https://www.sciencedirect.com/science/article/pii/S0925231223008962)
